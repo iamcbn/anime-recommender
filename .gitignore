@@ -1,0 +1,24 @@
+misc/
+backend/models
+backend/data_pipeline/artifacts
+
+
+# Virtual Environment
+anime/
+.venv/
+venv/
+env/
+bin/
+lib/
+include/
+
+# Configuration & Secrets
+database.ini
+.env
+
+# Python Bytecode
+__pycache__/
+*.pyc
+
+# Docker
+.dockerignore

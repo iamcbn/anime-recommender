@@ -9,7 +9,7 @@ KAGGLE_DATASET = 'calebmwelsh/anilist-anime-dataset'
 
 class KaggleDataVersionManager:
     """
-    Manage local versioned data artifacts for a Kaggle dataset.
+    Manage local versioned data artefacts for a Kaggle dataset.
 
     Policy:
       - One local version directory per Kaggle dataset version
@@ -102,7 +102,7 @@ class KaggleDataVersionManager:
     # ----------------------
     def check_and_prepare(self) -> tuple[Optional[Path], bool]:
         """
-        Check remote dataset version and create local artifact dir if new.
+        Check remote dataset version and create local artefact dir if new.
 
         Returns:
             (path, created)

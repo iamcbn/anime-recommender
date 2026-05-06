@@ -1,7 +1,7 @@
 from .helper.service_embedding import Embedder
 from .helper.retrieval import DatabaseManager
 from .helper.ranking import Ranker
-from backend.config import config
+from .config import config
 from typing import Text
 import time
 

@@ -1,6 +1,6 @@
 misc/
 backend/models
-backend/data_pipeline/artifacts
+backend/data_pipeline/artefacts
 
 
 # Virtual Environment

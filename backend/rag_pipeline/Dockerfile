@@ -10,8 +10,9 @@ RUN pip install --no-cache-dir torch==2.7.1 \
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/rag_pipeline .
+COPY backend/rag_pipeline /app/rag_pipeline
+
 
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.rag_pipeline.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "rag_pipeline.main:app", "--host", "0.0.0.0", "--port", "8000"]

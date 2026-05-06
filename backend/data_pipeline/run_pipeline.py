@@ -5,7 +5,7 @@ from .helper.database import DatabaseManager, DB_QUERIES, TEMP_QUERIES
 from .helper.embedding import Embedder
 from datetime import datetime
 import time
-from backend.config import config
+from .config import config
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from requests.exceptions import SSLError
 from pathlib import Path
@@ -25,7 +25,7 @@ KAGGLE_DATASET = "calebmwelsh/anilist-anime-dataset"
 
 # Getting data directory
 current_dir = Path(__file__).parent.resolve()
-DATA_DIR = current_dir / "artifacts"
+DATA_DIR = current_dir / "artefacts"
 
 
 # Authenticate Kaggle API

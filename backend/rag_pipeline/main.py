@@ -4,16 +4,13 @@ import os
 from fastapi import FastAPI, Depends, HTTPException, status, Security, Query
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
-from backend.rag_pipeline.rag_pipeline import rag_pipeline
-#from rag_pipeline import rag_pipeline
-#from .rag_pipeline.rag_pipeline import rag_pipeline
+from rag_pipeline.rag_pipeline import rag_pipeline
 from typing import Annotated
 from collections import defaultdict
 from datetime import timedelta, datetime
 
 app = FastAPI(title="Anime Recommendation API")
 
-# backend\rag_pipeline\rag_pipeline.py
 
 API_KEY = os.getenv("MY_API_KEY")
 api_key_header = APIKeyHeader(name="access_token", auto_error=True)

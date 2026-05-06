@@ -93,7 +93,7 @@ Models are downloaded from Hugging Face automatically on first run if not found 
 ANIME_RECOMMENDER/
 ├── backend/
 │   ├── data_pipeline/
-│   │   ├── artifacts/                    # Versioned local dataset storage
+│   │   ├── artefacts/                    # Versioned local dataset storage
 │   │   │   └── v{n}/
 │   │   │       ├── raw_data/             # Downloaded .xlsx from Kaggle
 │   │   │       └── metadata/             # Dataset and Kaggle metadata
@@ -103,8 +103,12 @@ ANIME_RECOMMENDER/
 │   │   │   ├── embedding.py              # Embedder (pipeline version)
 │   │   │   └── database.py              # DatabaseManager + SQL schemas
 │   │   ├── __init__.py
-│   │   └── run_pipeline.py              # Pipeline entry point
-│   ├── models/
+│   │   ├── config.py                     # DB config loader (env-var based)
+│   │   ├── requirements.txt
+│   │   ├── run_pipeline.py              # Pipeline entry point
+│   │   ├── .dockerignore
+│   │   └── Dockerfile
+│   ├── models/                           # Shared model storage (mounted as volume)
 │   │   ├── cross-encoder-mmarco-mMiniLMv2-L12-H384-v1/
 │   │   ├── paraphrase-multilingual-MiniLM-L12-v2/
 │   │   ├── anime_fasttext.bin            # Corpus-trained FastText model
@@ -115,16 +119,17 @@ ANIME_RECOMMENDER/
 │   │   │   ├── retrieval.py              # DatabaseManager (query version)
 │   │   │   └── ranking.py               # Ranker: reranking + franchise collapse
 │   │   ├── __init__.py
-│   │   └── rag_pipeline.py              # Pipeline orchestrator
-│   ├── __init__.py
-│   ├── .dockerignore
-│   ├── config.py                         # Database config loader
-│   ├── database.ini                      # Database connection settings
-│   ├── dockerfile
-│   └── main.py                           # FastAPI app entry point
+│   │   ├── config.py                     # DB config loader (env-var based)
+│   │   ├── main.py                       # FastAPI app entry point
+│   │   ├── rag_pipeline.py              # Pipeline orchestrator
+│   │   ├── requirements.txt
+│   │   ├── .dockerignore
+│   │   └── Dockerfile
+│   └── __init__.py
 ├── misc/
 ├── anime/
-├── .env
+├── .env                                  # Single source of truth for all credentials
+├── docker-compose.yml                    # Wires services and shared model volume
 └── README.md
 ```
 
@@ -152,11 +157,11 @@ The pipeline in `run_pipeline.py` handles the full lifecycle from Kaggle to the 
 
 ### Step 1: Version Check
 
-`KaggleDataVersionManager` queries the Kaggle API for the remote dataset version and compares it against the local `.dataset_state.json`. If the remote version is newer (or no local version exists), a new versioned directory is created under `artifacts/v{n}/`.
+`KaggleDataVersionManager` queries the Kaggle API for the remote dataset version and compares it against the local `.dataset_state.json`. If the remote version is newer (or no local version exists), a new versioned directory is created under `artefacts/v{n}/`.
 
 ### Step 2: Download
 
-The dataset (`anilist_anime_data_complete.xlsx`) is downloaded into `artifacts/v{n}/raw_data/`. The download uses exponential backoff retry (up to 5 attempts) to handle SSL errors.
+The dataset (`anilist_anime_data_complete.xlsx`) is downloaded into `artefacts/v{n}/raw_data/`. The download uses exponential backoff retry (up to 5 attempts) to handle SSL errors.
 
 ### Step 3: Preprocessing (`Preprocessor`)
 
@@ -287,9 +292,10 @@ The `extra.timings` field breaks down latency per pipeline stage in milliseconds
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - PostgreSQL with the `pgvector` extension
-- Kaggle API credentials at `~/.kaggle/kaggle.json`
+- Kaggle API credentials at `~/.kaggle/kaggle.json` or in `.env` file
+- Docker and Docker Compose
 
 ### Environment Variables
 
@@ -297,14 +303,25 @@ Create a `.env` file in the project root:
 
 ```env
 MY_API_KEY=your_secret_api_key
+
+DB_HOST=localhost
+DB_PORT=your_db_port
+DB_NAME=your_db_name
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+
+MODELS_DIR=/app/models
+
+export KAGGLE_API_TOKEN=kaggle_api_key
 ```
 
-Database connection settings go in `backend/database.ini`.
+Both services read from this file. No `database.ini` is needed.
 
 ### Running the Data Pipeline
 
 ```bash
-python -m backend.data_pipeline.run_pipeline
+cd backend
+python -m data_pipeline.run_pipeline
 ```
 
 The pipeline exits early with a message if the dataset is already up to date.
@@ -312,8 +329,17 @@ The pipeline exits early with a message if the dataset is already up to date.
 ### Running the API
 
 ```bash
-uvicorn backend.main:app --reload
+cd backend
+uvicorn rag_pipeline.main:app --reload
 ```
+
+### Running with Docker
+
+```bash
+docker compose up
+```
+
+Models are mounted from `./backend/models` into each container at `/app/models`. The `rag_pipeline` service picks up updated FastText models automatically after each `data_pipeline` run without a rebuild.
 
 ---
 

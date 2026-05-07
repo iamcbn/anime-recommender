@@ -1,0 +1,23 @@
+result_for_demon slayer.xlsx 
+result.xlsx 
+result1.xlsx 
+rough_sketch.md 
+test.ipynb 
+try copy.ipynb 
+try.md 
+try1.md
+fuzzy test.ipynb 
+gh.ipynb
+
+.env 
+.gitignore
+__pycache__/
+pipeline/test
+
+__pycache__
+*.pyc
+*.pyo
+.git
+.env
+venv/
+*.ipynb

@@ -19,6 +19,3 @@ database.ini
 # Python Bytecode
 __pycache__/
 *.pyc
-
-# Docker
-.dockerignore

@@ -1,0 +1,7 @@
+__pycache__/
+artefacts/
+test/
+
+*.pyc
+*.pyo
+.env

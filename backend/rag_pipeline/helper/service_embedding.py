@@ -50,6 +50,13 @@ class Embedder:
     # ----------------------
     
     def load_sbert(self) -> SentenceTransformer:
+        # Check if model exists
+        if not self.sbert_path.exists():
+            raise FileNotFoundError(
+                f"SBERT model not found at {self.sbert_path}. "
+                f"Run the data pipeline first to download models."
+            )
+        
         try:
             model = SentenceTransformer(str(self.sbert_path),
                                         model_kwargs={"dtype":torch.float16}, 
@@ -61,6 +68,13 @@ class Embedder:
             raise
     
     def load_fasttext(self):
+        # Check if model exists
+        if not self.fasttext_path.exists():
+            raise FileNotFoundError(
+                f"FastText model not found at {self.fasttext_path}. "
+                f"Run the data pipeline first to train the FastText model."
+            )
+        
         try:
             model =  fasttext.load_model(str(self.fasttext_path))
             return model

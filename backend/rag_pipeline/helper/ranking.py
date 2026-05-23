@@ -48,6 +48,12 @@ class Ranker:
     # ----------------------
 
     def load_cross_encoder(self) -> CrossEncoder:
+        # Check if model exists
+        if not self.cross_encoder_path.exists():
+            raise FileNotFoundError(
+                f"Cross-encoder model not found at {self.cross_encoder_path}. "
+                f"Run the data pipeline first to download models."
+            )
         try:
             model =  CrossEncoder(str(self.cross_encoder_path),
                                   model_kwargs=self.MODEL_KWARGS, 

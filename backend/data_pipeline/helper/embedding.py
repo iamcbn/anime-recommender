@@ -4,6 +4,7 @@ from sentence_transformers.cross_encoder import CrossEncoder
 import pandas as pd, numpy as np
 import fasttext
 import torch
+import os
 
 
 """
@@ -28,6 +29,11 @@ class Embedder:
 
     FASTTEXT_MODEL = "anime_fasttext.bin"
     FASTTEXT_FILE = "anime_fasttext.txt"
+
+    # Tell HuggingFace to cache downloads in our mounted volume -> For Docker
+    os.environ['HF_HOME'] = str(MODEL_PATH)
+    os.environ['TRANSFORMERS_CACHE'] = str(MODEL_PATH)
+    os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(MODEL_PATH)
 
     # Ensuring SBERT uses GPU
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'

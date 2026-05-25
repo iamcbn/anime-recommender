@@ -1,0 +1,76 @@
+services:
+
+  # ──────────────────────────────────────────────
+  # PostgreSQL + pgvector
+  # ──────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ──────────────────────────────────────────────
+  # Data Pipeline  (one-shot: fetch → preprocess → embed → load)
+  # ──────────────────────────────────────────────
+  data_pipeline:
+    build:
+      context: .
+      dockerfile: backend/data_pipeline/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME}
+      KAGGLE_KEY: ${KAGGLE_KEY}
+      HF_TOKEN: ${HF_TOKEN}
+    volumes:
+      - models:/app/models
+      - artefacts:/app/data_pipeline/artefacts
+    # One-shot: runs the pipeline then exits
+    restart: "no"
+
+  # ──────────────────────────────────────────────
+  # RAG Pipeline / FastAPI
+  # ──────────────────────────────────────────────
+  rag_pipeline:
+    build:
+      context: .
+      dockerfile: backend/rag_pipeline/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      data_pipeline:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MY_API_KEY: ${MY_API_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/app/models
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  models:
+  artefacts:

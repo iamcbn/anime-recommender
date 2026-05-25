@@ -23,7 +23,7 @@ class Embedder:
     #MODEL_PATH = Path("models").resolve()
     
 
-    SBERT_NAME = "paraphrase/multilingual-MiniLM-L12-v2"
+    SBERT_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     SBERT_DIR = "paraphrase-multilingual-MiniLM-L12-v2"
 
     FASTTEXT_MODEL = "anime_fasttext.bin"

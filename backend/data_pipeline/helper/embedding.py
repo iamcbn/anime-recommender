@@ -21,7 +21,8 @@ class Embedder:
     MODEL_PATH = DIR / "models"
     
 
-    SBERT_NAME = "paraphrase/multilingual-MiniLM-L12-v2"
+    # [FIX] Changed model identifier to correct Hugging Face repository
+    SBERT_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     SBERT_DIR = "paraphrase-multilingual-MiniLM-L12-v2"
 
     CROSS_ENCODER_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
@@ -123,7 +124,8 @@ class Embedder:
             epoch=epoch,
             lr=lr,
             thread=thread,
-            minCount= 2
+            minCount= 2,
+            verbose=2 # Show training progress
         )
         ft_model.save_model(str(self.fasttext_path))
         return ft_model

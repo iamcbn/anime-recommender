@@ -58,10 +58,10 @@ def download_dataset():
         )
 download_dataset()
 print("Dataset download complete.")
-mgr._record_version(remote_version)    
 
-# Getting the dataset state version    
-STATE_VERSION = mgr.last_state_version()
+# [FIX] Calculate the new state version manually since we haven't saved it to the file yet.
+# If last_state_version is None, this is the first run (v1). Otherwise, it's the next version.
+STATE_VERSION = (mgr.last_state_version() or 0) + 1
 
 
 
@@ -145,8 +145,12 @@ db_manager.cleanup_temp(insert_order)
 
 db_manager.update_db_state(
     dataset_ref="calebmwelsh/anilist-anime-dataset",
-    dataset_version=mgr.last_state_version()
+    dataset_version=STATE_VERSION
 )
+
+# [FIX] Record the version in the JSON file ONLY after the entire pipeline finishes successfully
+mgr._record_version(remote_version)
+print("Pipeline complete. State officially recorded.")
  
 end_timet = time.perf_counter()
 end_time = datetime.now()

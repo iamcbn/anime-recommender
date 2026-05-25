@@ -93,7 +93,7 @@ Models are downloaded from Hugging Face automatically on first run if not found 
 ANIME_RECOMMENDER/
 ├── .github/
 │   └── workflows/
-│       └── update_data.yml               # GitHub Actions: weekly data refresh
+│       └── update_data.yaml               # GitHub Actions: weekly data refresh
 ├── backend/
 │   ├── data_pipeline/
 │   │   ├── artefacts/                    # Versioned local dataset storage
@@ -132,7 +132,7 @@ ANIME_RECOMMENDER/
 ├── misc/
 ├── anime/
 ├── .env                                  # Single source of truth for all credentials
-├── docker-compose.yml                    # Wires services and shared model volume
+├── docker-compose.yaml                    # Wires services and shared model volume
 └── README.md
 ```
 
@@ -359,9 +359,29 @@ docker compose up
 Models are mounted from `./backend/models` into each container at `/app/models`. The `rag_pipeline` service picks up updated FastText models automatically after each `data_pipeline` run without a rebuild.
 
 **Enabling GPU Acceleration (Optional):**
-By default, `docker-compose.yml` runs on CPU so that anyone can clone and run the project without NVIDIA driver errors. If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, add this `deploy` block under the `rag_pipeline` service in `docker-compose.yml`:
+By default, `docker-compose.yaml` runs on CPU so that anyone can clone and run the project without NVIDIA driver errors. If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, edit the `rag_pipeline` service in `docker-compose.yaml`:
 
 ```yaml
+  rag_pipeline:
+    build:
+      context: .
+      dockerfile: backend/rag_pipeline/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      data_pipeline:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MY_API_KEY: ${MY_API_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/app/models
     deploy:
       resources:
         reservations:
@@ -369,6 +389,7 @@ By default, `docker-compose.yml` runs on CPU so that anyone can clone and run th
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
 ```
 
 The Python code automatically detects GPU availability at runtime (`torch.cuda.is_available()`), so no code changes are needed.
@@ -407,11 +428,11 @@ During the containerisation and development phase, several critical engineering 
 > Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
 
 ### v1.1.0 (Current): Dockerisation & CI/CD
-- Added `docker-compose.yml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
+- Added `docker-compose.yaml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
 - Implemented multi-stage Docker builds to reduce image sizes
 - Data Pipeline Dockerfile: CPU-only, optimised for GitHub Actions
 - RAG Pipeline Dockerfile: CUDA-enabled, optimised for serverless GPU deployment
-- Wrote GitHub Actions workflow (`update_data.yml`) for automated weekly pipeline execution
+- Wrote GitHub Actions workflow (`update_data.yaml`) for automated weekly pipeline execution
 - Fixed Hugging Face model resolution paths for cold-start (empty volume) environments
 - Fixed state management bug: `_record_version()` moved to end of pipeline
 - Added `openpyxl` to data pipeline dependencies

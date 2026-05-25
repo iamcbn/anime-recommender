@@ -73,7 +73,7 @@ Served through a FastAPI backend with API key authentication and rate limiting.
 
 | Role | Model | Dimension |
 |------|-------|-----------|
-| Semantic retrieval | `paraphrase-multilingual-MiniLM-L12-v2` | 384 |
+| Semantic retrieval | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 |
 | Keyword / title retrieval | Custom FastText (`anime_fasttext.bin`) | 300 |
 | Reranker | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | — |
 
@@ -91,6 +91,9 @@ Models are downloaded from Hugging Face automatically on first run if not found 
 
 ```
 ANIME_RECOMMENDER/
+├── .github/
+│   └── workflows/
+│       └── update_data.yml               # GitHub Actions: weekly data refresh
 ├── backend/
 │   ├── data_pipeline/
 │   │   ├── artefacts/                    # Versioned local dataset storage
@@ -107,7 +110,7 @@ ANIME_RECOMMENDER/
 │   │   ├── requirements.txt
 │   │   ├── run_pipeline.py              # Pipeline entry point
 │   │   ├── .dockerignore
-│   │   └── Dockerfile
+│   │   └── Dockerfile                    # Multi-stage build (CPU)
 │   ├── models/                           # Shared model storage (mounted as volume)
 │   │   ├── cross-encoder-mmarco-mMiniLMv2-L12-H384-v1/
 │   │   ├── paraphrase-multilingual-MiniLM-L12-v2/
@@ -124,7 +127,7 @@ ANIME_RECOMMENDER/
 │   │   ├── rag_pipeline.py              # Pipeline orchestrator
 │   │   ├── requirements.txt
 │   │   ├── .dockerignore
-│   │   └── Dockerfile
+│   │   └── Dockerfile                    # Multi-stage build (CUDA)
 │   └── __init__.py
 ├── misc/
 ├── anime/
@@ -187,7 +190,7 @@ Data is written to temporary tables (`t{table_name}`) first. If batch insertion 
 
 ### Step 6: State Recording
 
-The dataset version and timestamp are written to the `db_state` table in PostgreSQL, and the local `.dataset_state.json` is updated.
+The dataset version and timestamp are written to the `db_state` table in PostgreSQL, and the local `.dataset_state.json` is updated. State is only recorded after the entire pipeline completes successfully to prevent partial-run false positives.
 
 ---
 
@@ -288,13 +291,23 @@ The `extra.timings` field breaks down latency per pipeline stage in milliseconds
 
 ---
 
-## Setup
+## Planned Production Architecture
+
+To balance cost, performance, and automation, the production stack is designed as follows:
+
+1. **Database (Supabase):** Managed PostgreSQL with native `pgvector` support.
+2. **Data Pipeline (GitHub Actions):** Runs fully autonomously via a cron schedule (every Sunday at 3 AM UTC). It builds the multi-stage CPU Docker image, connects to the Supabase database, and pushes fresh Kaggle data.
+3. **API Hosting (Modal / Hugging Face Spaces):** The `rag_pipeline` is deployed to a serverless GPU provider. This ensures blazing fast inference (sub-second) while scaling to zero when idle, keeping costs incredibly low.
+
+---
+
+## Setup & Local Development
 
 ### Prerequisites
 
 - Python 3.11+
 - PostgreSQL with the `pgvector` extension
-- Kaggle API credentials at `~/.kaggle/kaggle.json` or in `.env` file
+- Kaggle API credentials in `.env` file
 - Docker and Docker Compose
 
 ### Environment Variables
@@ -305,14 +318,16 @@ Create a `.env` file in the project root:
 MY_API_KEY=your_secret_api_key
 
 DB_HOST=localhost
-DB_PORT=your_db_port
+DB_PORT=5432
 DB_NAME=your_db_name
 DB_USER=your_db_user
 DB_PASSWORD=your_db_password
 
 MODELS_DIR=/app/models
 
-export KAGGLE_API_TOKEN=kaggle_api_key
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_KEY=your_kaggle_api_key
+HF_TOKEN=your_huggingface_token
 ```
 
 Both services read from this file. No `database.ini` is needed.
@@ -335,11 +350,78 @@ uvicorn rag_pipeline.main:app --reload
 
 ### Running with Docker
 
+We use **multi-stage Docker builds** to keep images lean. The data pipeline uses a CPU-only image (optimised for GitHub Actions runners), while the RAG pipeline includes CUDA support for GPU acceleration.
+
 ```bash
 docker compose up
 ```
 
 Models are mounted from `./backend/models` into each container at `/app/models`. The `rag_pipeline` service picks up updated FastText models automatically after each `data_pipeline` run without a rebuild.
+
+**Enabling GPU Acceleration (Optional):**
+By default, `docker-compose.yml` runs on CPU so that anyone can clone and run the project without NVIDIA driver errors. If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, add this `deploy` block under the `rag_pipeline` service in `docker-compose.yml`:
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+The Python code automatically detects GPU availability at runtime (`torch.cuda.is_available()`), so no code changes are needed.
+
+---
+
+## Tradeoffs, Issues Encountered, & Blockers
+
+During the containerisation and development phase, several critical engineering hurdles were tackled:
+
+1. **Host-Level DNS Blocking Docker Pulls:**
+   * **Issue:** Docker image builds failed with `dial tcp: lookup auth.docker.io: no such host`.
+   * **Cause/Fix:** The local router/ISP was silently blocking Docker Hub DNS resolution. Fixed by temporarily overriding Windows host Wi-Fi DNS to `8.8.8.8` (Google Public DNS).
+
+2. **Missing Dependencies (`openpyxl`):**
+   * **Issue:** `pandas.read_excel()` threw a `ModuleNotFoundError` during the data pipeline.
+   * **Fix:** The Kaggle dataset is an `.xlsx` file. Added `openpyxl==3.1.5` (minimum version required by Pandas 3.0.0) to `requirements.txt`.
+
+3. **State Management Bug in Pipeline:**
+   * **Issue:** If the pipeline crashed mid-execution (e.g., during embedding), it still reported "Dataset already up to date" on the next run, preventing recovery.
+   * **Fix:** The dataset state was being recorded immediately after download (before processing). Moved `_record_version()` to the very end of the pipeline to ensure state is only saved after the entire pipeline succeeds.
+
+4. **Hugging Face Model Identifier Typo (401 Unauthorized):**
+   * **Issue:** Docker container crashed with `Repository Not Found` when trying to download the SBERT model.
+   * **Cause:** The script used `paraphrase/multilingual-MiniLM-L12-v2`, which Hugging Face interpreted as a user named `paraphrase`. Locally, this bug was hidden because the model folder already existed on disk and the download path was never triggered.
+   * **Fix:** Changed to the correct identifier: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+
+5. **CPU vs GPU Image Size Tradeoff:**
+   * **Tradeoff:** Installing PyTorch with CUDA support increases the Docker image size significantly (~4 GB vs ~1.5 GB for CPU-only).
+   * **Decision:** The RAG API uses the CUDA-enabled image for production inference speed. The Data Pipeline uses a lean CPU-only image since it runs on standard GitHub Actions runners. Both use multi-stage builds to strip out build tools (`build-essential`) from the final image.
+
+---
+
+## Change Management (Changelog)
+
+> Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
+
+### v1.1.0 (Current): Dockerisation & CI/CD
+- Added `docker-compose.yml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
+- Implemented multi-stage Docker builds to reduce image sizes
+- Data Pipeline Dockerfile: CPU-only, optimised for GitHub Actions
+- RAG Pipeline Dockerfile: CUDA-enabled, optimised for serverless GPU deployment
+- Wrote GitHub Actions workflow (`update_data.yml`) for automated weekly pipeline execution
+- Fixed Hugging Face model resolution paths for cold-start (empty volume) environments
+- Fixed state management bug: `_record_version()` moved to end of pipeline
+- Added `openpyxl` to data pipeline dependencies
+- Updated `.env` variable names to align with Kaggle Python library (`KAGGLE_KEY`)
+
+### v1.0.0: Core Pipeline Complete
+- Implemented two-stage retrieval (MiniLM + FastText)
+- Implemented Cross-Encoder reranking and Franchise Collapse (fuzzy matching via rapidfuzz)
+- Designed normalised 5-table PostgreSQL schema using `pgvector`
+- Built FastAPI wrapper with API key authentication and rate limiting (20 req/min)
 
 ---
 
@@ -352,10 +434,9 @@ Models are mounted from `./backend/models` into each container at `/app/models`.
 | Reranking pipeline | Done |
 | FastAPI backend | Done |
 | API key auth + rate limiting | Done |
-| Docker containerisation | In progress |
-| Automatic data refresh | To Do |
-| Live PostgreSQL database | To Do |
-| LLM Integration | To Do |
+| Docker containerisation | Done |
+| Automatic data refresh (GitHub Actions) | In progress |
+| Live PostgreSQL database (Supabase) | In progress |
 | Frontend | To Do |
 
 ---
@@ -366,3 +447,4 @@ Models are mounted from `./backend/models` into each container at `/app/models`.
 - Add query result caching for frequent searches
 - Personalised recommendations based on user history
 - WhatsApp integration
+- ONNX Runtime optimisation for faster CPU inference

@@ -19,3 +19,6 @@ database.ini
 # Python Bytecode
 __pycache__/
 *.pyc
+.continue/
+.claude
+

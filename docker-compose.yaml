@@ -48,6 +48,8 @@ services:
   # ──────────────────────────────────────────────
   # RAG Pipeline / FastAPI
   # ──────────────────────────────────────────────
+
+  # Default CPU service (runs automatically)
   rag_pipeline:
     build:
       context: .
@@ -69,6 +71,39 @@ services:
     volumes:
       - models:/app/models
     restart: unless-stopped
+
+  # Optional GPU-accelerated service (only runs if you use the "gpu" profile) 
+  rag_pipeline_gpu:
+    build:
+      context: .
+      dockerfile: backend/rag_pipeline/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      data_pipeline:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MY_API_KEY: ${MY_API_KEY}
+    ports:
+      - "8001:8000"
+    volumes:
+      - models:/app/models
+    profiles:
+      - gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
 
 volumes:
   pgdata:

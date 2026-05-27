@@ -352,47 +352,24 @@ uvicorn rag_pipeline.main:app --reload
 
 We use **multi-stage Docker builds** to keep images lean. The data pipeline uses a CPU-only image (optimised for GitHub Actions runners), while the RAG pipeline includes CUDA support for GPU acceleration.
 
+By default, the `docker-compose.yaml` runs on the CPU to ensure anyone can clone and run the project without driver errors:
+
 ```bash
 docker compose up
 ```
 
 Models are mounted from `./backend/models` into each container at `/app/models`. The `rag_pipeline` service picks up updated FastText models automatically after each `data_pipeline` run without a rebuild.
 
-**Enabling GPU Acceleration (Optional):**
-By default, `docker-compose.yaml` runs on CPU so that anyone can clone and run the project without NVIDIA driver errors. If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, edit the `rag_pipeline` service in `docker-compose.yaml`:
+**Enabling Fast GPU Acceleration (Optional):**
+If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, you can use the built-in `gpu` profile. This launches a dedicated GPU-enabled version of the API on port `8001`:
 
-```yaml
-  rag_pipeline:
-    build:
-      context: .
-      dockerfile: backend/rag_pipeline/Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
-      data_pipeline:
-        condition: service_completed_successfully
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      MY_API_KEY: ${MY_API_KEY}
-    ports:
-      - "8000:8000"
-    volumes:
-      - models:/app/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
+```bash
+docker compose --profile gpu up
 ```
 
-The Python code automatically detects GPU availability at runtime (`torch.cuda.is_available()`), so no code changes are needed.
+The Python code automatically detects GPU availability at runtime (`torch.cuda.is_available()`), so no code changes are needed. The API endpoints will be available at:
+- `http://localhost:8000` (CPU - Standard)
+- `http://localhost:8001` (GPU - Accelerated)
 
 ---
 
@@ -429,10 +406,11 @@ During the containerisation and development phase, several critical engineering 
 
 ### v1.1.0 (Current): Dockerisation & CI/CD
 - Added `docker-compose.yaml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
+- Implemented Docker Compose `gpu` profiles for seamless hardware switching
 - Implemented multi-stage Docker builds to reduce image sizes
 - Data Pipeline Dockerfile: CPU-only, optimised for GitHub Actions
 - RAG Pipeline Dockerfile: CUDA-enabled, optimised for serverless GPU deployment
-- Wrote GitHub Actions workflow (`update_data.yaml`) for automated weekly pipeline execution
+- Wrote GitHub Actions workflow (`update_data.yml`) for automated weekly pipeline execution
 - Fixed Hugging Face model resolution paths for cold-start (empty volume) environments
 - Fixed state management bug: `_record_version()` moved to end of pipeline
 - Added `openpyxl` to data pipeline dependencies

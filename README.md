@@ -267,22 +267,22 @@ Invalid or missing keys return `403 Forbidden`.
   "allowed_adult": false,
   "results": [
     {
-      "id": 1535,
-      "title_romaji": "Death Note",
-      "title_userPreferred": "Death Note",
-      "title_english": "Death Note",
-      "coverImage_large": "https://...",
-      "cross_encoder_score": 4.821,
-      "cosine_similarity": 0.934
+      "id": 152802,
+      "title_romaji": "Dark Gathering",
+      "title_userPreferred": "Dark Gathering",
+      "title_english": "Dark Gathering",
+      "coverImage_large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx152802-ENRcnqD5axhQ.jpg",
+      "cross_encoder_score": -4.234375,
+      "cosine_similarity": 0.8154253363609314
     }
   ],
   "extra": {
     "timings": {
-      "embedding_ms": 12.4,
-      "retrieval_ms": 38.7,
-      "reranking_ms": 210.3
+      "embedding_ms": 563.45,
+      "retrieval_ms": 338.23,
+      "reranking_ms": 794.48
     },
-    "total_ms": 261.4
+    "total_ms": 1696.16
   }
 }
 ```

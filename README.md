@@ -434,8 +434,10 @@ During the containerisation and development phase, several critical engineering 
 | FastAPI backend | Done |
 | API key auth + rate limiting | Done |
 | Docker containerisation | Done |
-| Automatic data refresh (GitHub Actions) | In progress |
-| Live PostgreSQL database (Supabase) | In progress |
+| Automatic data refresh (GitHub Actions) | Done |
+| Live PostgreSQL database (Supabase) | Done |
+| Model hosting (Modal) | In progress |
+| LLM Intergration | In progress |
 | Frontend | To Do |
 
 ---

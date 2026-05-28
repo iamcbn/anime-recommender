@@ -32,7 +32,7 @@ services:
         condition: service_healthy
     environment:
       DB_HOST: db
-      DB_PORT: 5432
+      DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
@@ -61,7 +61,7 @@ services:
         condition: service_completed_successfully
     environment:
       DB_HOST: db
-      DB_PORT: 5432
+      DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
@@ -84,7 +84,7 @@ services:
         condition: service_completed_successfully
     environment:
       DB_HOST: db
-      DB_PORT: 5432
+      DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}

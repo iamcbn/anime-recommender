@@ -2,7 +2,7 @@
 
 A semantic anime recommendation system built on a two-stage neural retrieval and ranking pipeline. The system understands the meaning behind anime descriptions, genres, and titles to surface recommendations based on thematic and narrative similarity, not just keyword overlap.
 
-Served through a FastAPI backend with API key authentication and rate limiting.
+Served through a FastAPI backend with API key authentication and rate limiting, and fully deployed to production on Modal serverless GPUs.
 
 ---
 
@@ -63,7 +63,7 @@ Served through a FastAPI backend with API key authentication and rate limiting.
 │    • Serialise to JSON                                  │
 │       │                                                 │
 │       ▼                                                 │
-│  FastAPI Response                                       │
+│  FastAPI Response (Deployed on Modal)                   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -93,7 +93,7 @@ Models are downloaded from Hugging Face automatically on first run if not found 
 ANIME_RECOMMENDER/
 ├── .github/
 │   └── workflows/
-│       └── update_data.yaml               # GitHub Actions: weekly data refresh
+│       └── update_data.yaml               # GitHub Actions: weekly data refresh & Supabase Sync
 ├── backend/
 │   ├── data_pipeline/
 │   │   ├── artefacts/                    # Versioned local dataset storage
@@ -132,9 +132,20 @@ ANIME_RECOMMENDER/
 ├── misc/
 ├── anime/
 ├── .env                                  # Single source of truth for all credentials
-├── docker-compose.yaml                    # Wires services and shared model volume
+├── modal_deploy.py                       # Modal production deployment script
+├── docker-compose.yaml                   # Wires services and shared model volume
 └── README.md
 ```
+
+---
+
+## Production Architecture
+
+The stack is designed for minimal operational overhead, cost efficiency, and fast inference:
+
+1. **Database (Supabase):** Managed PostgreSQL running remotely, configured with native `pgvector` support for cosine similarity search.
+2. **Data Pipeline (GitHub Actions):** Fully automated CI/CD pipeline triggered via cron (every Sunday at 3 AM UTC). It connects directly to Supabase to ingest and sync the latest Kaggle datasets without manual intervention.
+3. **API Hosting (Modal):** The FastAPI RAG system is deployed serverless on Modal (`modal_deploy.py`), taking advantage of Modal's automatic scaling and T4 GPU allocation. The deployment securely mounts local models, injects environment secrets, and achieves fast cold-starts.
 
 ---
 
@@ -214,7 +225,7 @@ Before returning, a franchise collapse step removes near-duplicate entries from 
 
 ---
 
-## API
+## API & Deployment
 
 ### Authentication
 
@@ -229,6 +240,16 @@ Invalid or missing keys return `403 Forbidden`.
 ### Rate Limiting
 
 20 requests per minute per API key. Exceeding this returns `429 Too Many Requests`.
+
+### Production Deployment (Modal)
+
+The backend is seamlessly deployed to Modal using the `modal_deploy.py` script. To deploy:
+
+1. Ensure your `.env` contains all API keys (e.g. Supabase, standard API keys).
+2. Run Modal deploy:
+```bash
+modal deploy modal_deploy.py
+```
 
 ### Endpoints
 
@@ -291,16 +312,6 @@ The `extra.timings` field breaks down latency per pipeline stage in milliseconds
 
 ---
 
-## Planned Production Architecture
-
-To balance cost, performance, and automation, the production stack is designed as follows:
-
-1. **Database (Supabase):** Managed PostgreSQL with native `pgvector` support.
-2. **Data Pipeline (GitHub Actions):** Runs fully autonomously via a cron schedule (every Sunday at 3 AM UTC). It builds the multi-stage CPU Docker image, connects to the Supabase database, and pushes fresh Kaggle data.
-3. **API Hosting (Modal / Hugging Face Spaces):** The `rag_pipeline` is deployed to a serverless GPU provider. This ensures blazing fast inference (sub-second) while scaling to zero when idle, keeping costs incredibly low.
-
----
-
 ## Setup & Local Development
 
 ### Prerequisites
@@ -317,8 +328,8 @@ Create a `.env` file in the project root:
 ```env
 MY_API_KEY=your_secret_api_key
 
-DB_HOST=localhost
-DB_PORT=5432
+DB_HOST=your_db_host
+DB_PORT=your_db_port
 DB_NAME=your_db_name
 DB_USER=your_db_user
 DB_PASSWORD=your_db_password
@@ -404,7 +415,13 @@ During the containerisation and development phase, several critical engineering 
 
 > Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
 
-### v1.1.0 (Current): Dockerisation & CI/CD
+### v1.2.0 (Current): Production Deployment & CI/CD Pipelines
+- **Modal Integration:** Created `modal_deploy.py` to deploy the FastAPI app onto serverless T4 GPUs with built-in dependency management and local model syncing.
+- **Supabase Connectivity:** Successfully pointed the data pipelines and recommendation system to the managed Supabase PostgreSQL instance.
+- **Automated Sync:** Configured GitHub Actions to automatically run `data_pipeline` against the remote Supabase database without manual intervention.
+- **Latency Diagnostics:** Profiled the `/recommend` endpoint, uncovering high retrieval latency due to missing `pgvector` indexes and sequential queries. See the Next Iteration section below for the resolution plan.
+
+### v1.1.0: Dockerisation & CI/CD
 - Added `docker-compose.yaml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
 - Implemented Docker Compose `gpu` profiles for seamless hardware switching
 - Implemented multi-stage Docker builds to reduce image sizes
@@ -436,13 +453,24 @@ During the containerisation and development phase, several critical engineering 
 | Docker containerisation | Done |
 | Automatic data refresh (GitHub Actions) | Done |
 | Live PostgreSQL database (Supabase) | Done |
-| Model hosting (Modal) | In progress |
-| LLM Intergration | In progress |
+| Serverless API hosting (Modal) | Done |
+| LLM Integration | In progress |
+| Retrieval Latency Optimizations | To Do |
 | Frontend | To Do |
 
 ---
 
 ## Planned Improvements
+
+### Next Iteration: Latency Optimization for RAG Pipeline
+
+Profiling revealed that retrieval is the primary latency bottleneck, driven by sequential scans and per-request connection overhead. The following improvements are planned:
+
+- **Database Indexes:** Add `pgvector` HNSW or IVFFlat indexes to the `anime_embedding` table in Supabase to eliminate sequential scans
+- **Connection Pooling:** Refactor `DatabaseManager` in `retrieval.py` to use `psycopg2.pool.SimpleConnectionPool` instead of creating and destroying connections for every single semantic search.
+- **Concurrent Retrieval:** Parallelize the execution of `sbert` and `fasttext` similarity searches in `retrieval.py` using `concurrent.futures.ThreadPoolExecutor` or `asyncio.gather()`. This will cut the retrieval time roughly in half.
+
+### Future Improvements
 
 - Fine-tune the cross-encoder on anime-specific relevance data
 - Add query result caching for frequent searches

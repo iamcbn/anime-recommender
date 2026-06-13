@@ -100,7 +100,7 @@ class KaggleDataVersionManager:
     # ----------------------
     # Public API
     # ----------------------
-    def check_and_prepare(self, db_kaggle_version: Optional[int] = None) -> tuple[Optional[Path], bool, int]:
+    def check_and_prepare(self, db_kaggle_version: Optional[int] = None, db_state_version: Optional[int] = None) -> tuple[Optional[Path], bool, int]:
         """
         Check remote dataset version and create local artefact dir if new.
 
@@ -108,6 +108,7 @@ class KaggleDataVersionManager:
             db_kaggle_version: The kaggle_version stored in the database.
                                Used as the primary staleness check. Falls back
                                to the local JSON file when None (legacy rows / first run).
+            db_state_version: The dataset_version stored in the database.
 
         Returns:
             (path, created, remote_version)
@@ -119,7 +120,7 @@ class KaggleDataVersionManager:
         # Primary check: database's kaggle_version (persists across CI runs)
         # Fallback: local JSON file's kaggle_version (only works when filesystem persists)
         known_version = db_kaggle_version or self.last_local_version()
-        state_version = self.last_state_version()
+        state_version = db_state_version or self.last_state_version()
 
 
         if known_version is None or remote_version > known_version:

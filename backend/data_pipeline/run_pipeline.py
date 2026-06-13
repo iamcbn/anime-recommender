@@ -49,7 +49,7 @@ mgr = KaggleDataVersionManager(
     dataset_ref=KAGGLE_DATASET
 )
 
-path, created, remote_version = mgr.check_and_prepare(db_kaggle_version=db_kaggle_version)
+path, created, remote_version = mgr.check_and_prepare(db_kaggle_version=db_kaggle_version, db_state_version=db_state_version)
 
 if not created:
     print("Dataset already up to date")

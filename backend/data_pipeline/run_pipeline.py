@@ -31,12 +31,25 @@ DATA_DIR = current_dir / "artefacts"
 # Authenticate Kaggle API
 kaggle.api.authenticate()
 
+# Initialise DB connection early so we can read kaggle_version for the staleness check
+PARAMS = config()
+db_manager = DatabaseManager(PARAMS=PARAMS)
+db_state = db_manager.get_db_state()
+
+# Unpack the persisted state (None on very first run)
+if db_state is not None:
+    db_state_version = db_state['dataset_version']
+    db_kaggle_version = db_state['kaggle_version']   # NULL for legacy rows
+else:
+    db_state_version = None
+    db_kaggle_version = None
+
 mgr = KaggleDataVersionManager(
     data_dir=DATA_DIR,
     dataset_ref=KAGGLE_DATASET
 )
 
-path, created, remote_version = mgr.check_and_prepare()
+path, created, remote_version = mgr.check_and_prepare(db_kaggle_version=db_kaggle_version)
 
 if not created:
     print("Dataset already up to date")
@@ -59,9 +72,8 @@ def download_dataset():
 download_dataset()
 print("Dataset download complete.")
 
-# [FIX] Calculate the new state version manually since we haven't saved it to the file yet.
-# If last_state_version is None, this is the first run (v1). Otherwise, it's the next version.
-STATE_VERSION = (mgr.last_state_version() or 0) + 1
+# Derive the next dataset_version from the DATABASE
+STATE_VERSION = (db_state_version or 0) + 1
 
 
 
@@ -93,13 +105,11 @@ print("Data embedding complete.")
 
 
 
+
 # ----------------------
 # DATA STORAGE
 # ----------------------
 
-PARAMS = config() 
-db_manager = DatabaseManager(PARAMS=PARAMS)
-db_state_version = db_manager.get_db_state()
 
 db_manager.create_vector_extension()
 
@@ -145,7 +155,8 @@ db_manager.cleanup_temp(insert_order)
 
 db_manager.update_db_state(
     dataset_ref="calebmwelsh/anilist-anime-dataset",
-    dataset_version=STATE_VERSION
+    dataset_version=STATE_VERSION,
+    kaggle_version=remote_version
 )
 
 # [FIX] Record the version in the JSON file ONLY after the entire pipeline finishes successfully

@@ -33,35 +33,44 @@ class DatabaseManager:
     def get_db_state(self):
         # Establish connection       
         with self.get_cursor() as cur:
-            # Ensure table exists
+            # Ensure table exists (includes kaggle_version for new deployments)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS db_state (
                 id SERIAL PRIMARY KEY,
                 dataset_ref TEXT NOT NULL,
                 dataset_version INT NOT NULL,
+                kaggle_version BIGINT,
                 applied_at TIMESTAMP NOT NULL DEFAULT NOW()
                 )
+            """)
+
+            # One-off migration: add kaggle_version to existing tables that lack it
+            cur.execute("""
+            ALTER TABLE db_state ADD COLUMN IF NOT EXISTS kaggle_version BIGINT;
             """)
         
 
             cur.execute("SELECT * FROM db_state ORDER BY id DESC LIMIT 1")
             db_state = cur.fetchone()
         
-        # Return dataset version
+        # Return dataset version and kaggle version
         if db_state is None:
             return None
         else:
-            return db_state['dataset_version']
+            return {
+                'dataset_version': db_state['dataset_version'],
+                'kaggle_version': db_state['kaggle_version']
+            }
         
 
-    def update_db_state(self, dataset_ref: str, dataset_version: int):
+    def update_db_state(self, dataset_ref: str, dataset_version: int, kaggle_version: int):
         # Establish connection
         with self.get_cursor() as cur:
             # Insert new state
             cur.execute("""
-            INSERT INTO db_state (dataset_ref, dataset_version)
-            VALUES (%s, %s)
-            """, (dataset_ref, dataset_version))
+            INSERT INTO db_state (dataset_ref, dataset_version, kaggle_version)
+            VALUES (%s, %s, %s)
+            """, (dataset_ref, dataset_version, kaggle_version))
 
 
 

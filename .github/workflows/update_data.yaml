@@ -14,7 +14,7 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build Data Pipeline Docker Image
         run: |
@@ -37,14 +37,3 @@ jobs:
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
             anime-data-pipeline
 
-      - name: Commit dataset state back to repo
-        run: |
-          # Copy the state file into the tracked directory
-          mkdir -p backend/data_pipeline/artefacts
-          cp artefacts/.dataset_state.json backend/data_pipeline/artefacts/.dataset_state.json 2>/dev/null || true
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/data_pipeline/artefacts/.dataset_state.json
-          git diff --cached --quiet || git commit -m "chore: update dataset_state.json [skip ci]"
-          git push

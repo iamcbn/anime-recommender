@@ -168,8 +168,6 @@ db_manager.update_db_state(
     kaggle_version=remote_version
 )
 
-# [FIX] Record the version in the JSON file ONLY after the entire pipeline finishes successfully
-mgr._record_version(remote_version)
 print("Pipeline complete. State officially recorded.")
  
 end_timet = time.perf_counter()

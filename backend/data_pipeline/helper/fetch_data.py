@@ -17,43 +17,11 @@ class KaggleDataVersionManager:
       - New version directory is created only if remote version is newer
     """
 
-    STATE_FILE = ".dataset_state.json"
-
     def __init__(self, data_dir: str, dataset_ref: str):
         self.data_dir = Path(data_dir).resolve()
         self.dataset_ref = dataset_ref
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file = self.data_dir / self.STATE_FILE
-        self._load_state()
-
-    # ----------------------
-    # STATE HANDLING
-    # ----------------------
-    def _load_state(self):
-        if self.state_file.exists():
-            self.state = json.loads(self.state_file.read_text())
-        else:
-            self.state = {}
-
-    def _save_state(self):
-        self.state_file.write_text(json.dumps(self.state, indent=2))
-
-    def last_local_version(self) -> Optional[int]:
-        return self.state.get("kaggle_version")
-    
-    def last_state_version(self) -> Optional[int]:
-        return self.state.get("state_version")
-
-    def _record_version(self, version):
-        self.state["kaggle_version"] = version
-        self.state["updated_at"] = datetime.now(UTC).isoformat().split("+")[0] + "Z"
-        if "state_version" not in self.state:
-            self.state["state_version"] = 1
-        else:
-            self.state["state_version"] += 1
-        self._save_state()
-        self._load_state()  # 🔑 refresh in-memory state
 
     # ----------------------
     # KAGGLE VERSION LOOKUP
@@ -117,17 +85,11 @@ class KaggleDataVersionManager:
         if remote_version is None:
             raise RuntimeError("Could not determine remote Kaggle dataset version")
 
-        # Primary check: database's kaggle_version (persists across CI runs)
-        # Fallback: local JSON file's kaggle_version (only works when filesystem persists)
-        known_version = db_kaggle_version or self.last_local_version()
-        state_version = db_state_version or self.last_state_version()
-
-
-        if known_version is None or remote_version > known_version:
-            if state_version is None:
+        if db_kaggle_version is None or remote_version > db_kaggle_version:
+            if db_state_version is None:
                 path = self.create_version_dir(1) 
             else:
-                path = self.create_version_dir(state_version + 1)
+                path = self.create_version_dir(db_state_version + 1)
 
             #self._record_version(remote_version)
             return path, True, remote_version

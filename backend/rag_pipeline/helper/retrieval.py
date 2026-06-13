@@ -1,13 +1,21 @@
 from psycopg2 import connect, extras
+from psycopg2.pool import ThreadedConnectionPool
 from typing import List, Tuple
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 
 
 class DatabaseManager:
 
-    def __init__(self, PARAMS: dict):
+    def __init__(self, PARAMS: dict, min_conn: int = 2, max_conn: int = 5):
         self.PARAMS = PARAMS
+        self._pool = ThreadedConnectionPool(
+            minconn=min_conn,
+            maxconn=max_conn,
+            **PARAMS,
+            cursor_factory=extras.DictCursor
+        )
         
 
     # ----------------------
@@ -16,13 +24,13 @@ class DatabaseManager:
 
     @contextmanager
     def get_cursor(self):
-        conn = connect(**self.PARAMS, cursor_factory=extras.DictCursor)
+        conn = self._pool.getconn()
         try:
             with conn:
                 with conn.cursor() as cur:
                     yield cur
         finally:
-            conn.close()
+            self._pool.putconn(conn)
 
     # ----------------------
     # EMBEDDING METHODS
@@ -95,14 +103,20 @@ class DatabaseManager:
 
     def execute(self, embedding: Tuple, top_k:int =50, allow_adult: bool = False)-> Tuple:
         sbert_embedding, fasttext_embedding = embedding
-        sbert_result = self.semantic_search(sbert_embedding, 'sbert', top_k, allow_adult)
-        fasttext_result = self.semantic_search(fasttext_embedding, 'fasttext', top_k, allow_adult)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            sbert_future = executor.submit(self.semantic_search, sbert_embedding, 'sbert', top_k, allow_adult)
+            fasttext_future = executor.submit(self.semantic_search, fasttext_embedding, 'fasttext', top_k, allow_adult)
+
+            sbert_result = sbert_future.result()
+            fasttext_result = fasttext_future.result()
 
         return sbert_result, fasttext_result
 
 
-
-
+    def close(self):
+        """Close all connections in the pool."""
+        self._pool.closeall()
 
 
 

@@ -114,6 +114,37 @@ class DatabaseManager:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
 
+    def create_vector_indexes(self):
+        """
+        Build HNSW indexes on the anime_embedding table for fast
+        approximate nearest-neighbour search. Should be called AFTER
+        data has been fully inserted/promoted into the main table.
+        """
+        with self.get_cursor() as cur:
+            # Give PostgreSQL extra memory for the heavy index build
+            cur.execute("SET maintenance_work_mem = '1GB';")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS anime_sbert_hnsw_idx
+                ON anime_embedding USING hnsw (sbert_embedding vector_cosine_ops);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS anime_fasttext_hnsw_idx
+                ON anime_embedding USING hnsw (fasttext_embedding vector_cosine_ops);
+            """)
+        print("HNSW vector indexes created successfully.")
+
+
+    def drop_vector_indexes(self):
+        """
+        Drop HNSW indexes before bulk data promotion so that
+        INSERT ... SELECT doesn't have to update the index row-by-row.
+        """
+        with self.get_cursor() as cur:
+            cur.execute("DROP INDEX IF EXISTS anime_sbert_hnsw_idx;")
+            cur.execute("DROP INDEX IF EXISTS anime_fasttext_hnsw_idx;")
+        print("HNSW vector indexes dropped.")
+
+
     def _adapt_value_old(self, x):
         if x is None:
             return None

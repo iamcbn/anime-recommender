@@ -34,9 +34,11 @@ Served through a FastAPI backend with API key authentication and rate limiting, 
 │       ▼                                                 │
 │  DatabaseManager                                        │
 │    • Write to temp tables (staging)                     │
+│    • Drop HNSW indexes                                  │
 │    • Promote temp ──► main tables                       │
+│    • Rebuild HNSW indexes                               │
 │    • Cleanup temp tables                                │
-│    • Record dataset version in db_state                 │
+│    • Record dataset version + kaggle_version in db_state│
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -51,9 +53,10 @@ Served through a FastAPI backend with API key authentication and rate limiting, 
 │    • FastText embedding (300-dim)                       │
 │       │                                                 │
 │       ▼                                                 │
-│  DatabaseManager                                        │
-│    • pgvector cosine search (SBERT) ──► top 50          │
-│    • pgvector cosine search (FastText) ──► top 50       │
+│  DatabaseManager (connection-pooled)                    │
+│    • pgvector HNSW cosine search (SBERT) ──► top 50     │
+│    • pgvector HNSW cosine search (FastText) ──► top 50  │
+│    • Both searches run concurrently via ThreadPool      │
 │       │                                                 │
 │       ▼                                                 │
 │  Ranker                                                 │
@@ -171,7 +174,7 @@ The pipeline in `run_pipeline.py` handles the full lifecycle from Kaggle to the 
 
 ### Step 1: Version Check
 
-`KaggleDataVersionManager` queries the Kaggle API for the remote dataset version and compares it against the local `.dataset_state.json`. If the remote version is newer (or no local version exists), a new versioned directory is created under `artefacts/v{n}/`.
+`KaggleDataVersionManager` queries the Kaggle API for the remote dataset version and compares it against the `kaggle_version` stored in the `db_state` table in PostgreSQL (falling back to the local `.dataset_state.json` if the database value is `NULL`). Using the database as the primary source of truth ensures the staleness check works correctly in ephemeral CI environments like GitHub Actions, where the local JSON file does not persist between runs. If the remote version is newer (or no known version exists), a new versioned directory is created under `artefacts/v{n}/`.
 
 ### Step 2: Download
 
@@ -197,11 +200,11 @@ The preprocessed data is split into the five tables above and returned as a dict
 
 ### Step 5: Staging and Promotion
 
-Data is written to temporary tables (`t{table_name}`) first. If batch insertion fails on any row, the pipeline falls back to row-by-row insertion and logs the exact failing row and column. Once all temp tables are populated successfully, data is promoted to the main tables via `TRUNCATE ... CASCADE` followed by `INSERT ... SELECT`. Temp tables are dropped after promotion.
+Data is written to temporary tables (`t{table_name}`) first. If batch insertion fails on any row, the pipeline falls back to row-by-row insertion and logs the exact failing row and column. Once all temp tables are populated successfully, HNSW vector indexes are dropped to avoid row-by-row index updates during bulk insertion. Data is then promoted to the main tables via `TRUNCATE ... CASCADE` followed by `INSERT ... SELECT`. After promotion, HNSW indexes are rebuilt from scratch on the freshly populated table (with `maintenance_work_mem` temporarily set to `1GB` for the session). Temp tables are dropped after promotion.
 
 ### Step 6: State Recording
 
-The dataset version and timestamp are written to the `db_state` table in PostgreSQL, and the local `.dataset_state.json` is updated. State is only recorded after the entire pipeline completes successfully to prevent partial-run false positives.
+The dataset version (`dataset_version`), the Kaggle remote version timestamp (`kaggle_version`), and the current timestamp are written to the `db_state` table in PostgreSQL. The local `.dataset_state.json` is also updated and committed back to the repository via a GitHub Actions step. Both the `dataset_version` and `kaggle_version` are derived from the database (the only persistent store in CI), ensuring they increment correctly across ephemeral Docker runs. State is only recorded after the entire pipeline completes successfully to prevent partial-run false positives.
 
 ---
 
@@ -215,7 +218,7 @@ The query is embedded independently by both models:
 
 ### Retrieval (`retrieval.py`)
 
-Two separate pgvector cosine similarity queries run against `anime_embedding`, one per model, each returning the top 50 candidates. Adult content is filtered at the database level via the `isAdult` flag in `anime_content`. Dimension validation is enforced before each query (384 for SBERT, 300 for FastText) and raises a `ValueError` before hitting the database if incorrect.
+Two pgvector cosine similarity queries run **concurrently** against `anime_embedding` using `concurrent.futures.ThreadPoolExecutor`, one per model, each returning the top 50 candidates. Both queries are accelerated by HNSW (Hierarchical Navigable Small World) indexes on the `sbert_embedding` and `fasttext_embedding` columns, replacing the previous sequential scan approach. The `DatabaseManager` uses a `psycopg2.pool.ThreadedConnectionPool` (min 2, max 5 connections) to eliminate per-request TCP connection overhead; each thread leases its own connection from the pool. Adult content is filtered at the database level via the `isAdult` flag in `anime_content`. Dimension validation is enforced before each query (384 for SBERT, 300 for FastText) and raises a `ValueError` before hitting the database if incorrect.
 
 ### Reranking and Franchise Collapse (`ranking.py`)
 
@@ -415,11 +418,19 @@ During the containerisation and development phase, several critical engineering 
 
 > Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
 
-### v1.2.0 (Current): Production Deployment & CI/CD Pipelines
+### v1.3.0 (Current): Retrieval Latency Optimization & Pipeline State Fixes
+- **HNSW Vector Indexes:** Added pgvector HNSW indexes on `sbert_embedding` and `fasttext_embedding` columns, replacing sequential scans with fast approximate nearest-neighbour search. Indexes are automatically dropped before bulk data promotion and rebuilt after, avoiding row-by-row index update penalties during the weekly pipeline run.
+- **Connection Pooling:** Refactored the RAG pipeline's `DatabaseManager` to use `psycopg2.pool.ThreadedConnectionPool`, eliminating ~50-100ms of TCP handshake overhead per request.
+- **Concurrent Retrieval:** SBERT and FastText similarity searches now execute in parallel via `concurrent.futures.ThreadPoolExecutor`, cutting retrieval wall-clock time roughly in half.
+- **Dataset Version Fix:** Fixed `dataset_version` in `db_state` always being `1` by deriving it from the database instead of the ephemeral local JSON file.
+- **Kaggle Version Tracking:** Added `kaggle_version` column to `db_state` so the pipeline can skip unnecessary downloads when the Kaggle dataset hasn't changed between runs.
+- **State Persistence in CI:** Updated the GitHub Actions workflow to mount a volume for the artefacts directory and commit `.dataset_state.json` back to the repository after each pipeline run.
+
+### v1.2.0: Production Deployment & CI/CD Pipelines
 - **Modal Integration:** Created `modal_deploy.py` to deploy the FastAPI app onto serverless T4 GPUs with built-in dependency management and local model syncing.
 - **Supabase Connectivity:** Successfully pointed the data pipelines and recommendation system to the managed Supabase PostgreSQL instance.
 - **Automated Sync:** Configured GitHub Actions to automatically run `data_pipeline` against the remote Supabase database without manual intervention.
-- **Latency Diagnostics:** Profiled the `/recommend` endpoint, uncovering high retrieval latency due to missing `pgvector` indexes and sequential queries. See the Next Iteration section below for the resolution plan.
+- **Latency Diagnostics:** Profiled the `/recommend` endpoint, uncovering high retrieval latency due to missing `pgvector` indexes and sequential queries.
 
 ### v1.1.0: Dockerisation & CI/CD
 - Added `docker-compose.yaml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
@@ -454,21 +465,15 @@ During the containerisation and development phase, several critical engineering 
 | Automatic data refresh (GitHub Actions) | Done |
 | Live PostgreSQL database (Supabase) | Done |
 | Serverless API hosting (Modal) | Done |
+| Retrieval Latency Optimizations | Done |
 | LLM Integration | In progress |
-| Retrieval Latency Optimizations | To Do |
 | Frontend | To Do |
 
 ---
 
 ## Planned Improvements
 
-### Next Iteration: Latency Optimization for RAG Pipeline
-
-Profiling revealed that retrieval is the primary latency bottleneck, driven by sequential scans and per-request connection overhead. The following improvements are planned:
-
-- **Database Indexes:** Add `pgvector` HNSW or IVFFlat indexes to the `anime_embedding` table in Supabase to eliminate sequential scans
-- **Connection Pooling:** Refactor `DatabaseManager` in `retrieval.py` to use `psycopg2.pool.SimpleConnectionPool` instead of creating and destroying connections for every single semantic search.
-- **Concurrent Retrieval:** Parallelize the execution of `sbert` and `fasttext` similarity searches in `retrieval.py` using `concurrent.futures.ThreadPoolExecutor` or `asyncio.gather()`. This will cut the retrieval time roughly in half.
+### Next Iteration
 
 ### Future Improvements
 

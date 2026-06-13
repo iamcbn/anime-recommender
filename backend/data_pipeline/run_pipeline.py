@@ -142,6 +142,10 @@ for table in insert_order:
     db_manager.insert_temp_data(table, tables[table])
 
 
+# Drop HNSW indexes before bulk promotion to avoid slow row-by-row index updates
+print("Dropping HNSW vector indexes before promotion")
+db_manager.drop_vector_indexes()
+
 # Pushing data from staging area to main DB
 print(f"Pushing data from staging area to main DB")
 for table in insert_order:
@@ -151,6 +155,10 @@ for table in insert_order:
 # Deleting temp tables
 print("Deleting temp tables")
 db_manager.cleanup_temp(insert_order)
+
+# Rebuild HNSW indexes on the freshly populated table
+print("Rebuilding HNSW vector indexes")
+db_manager.create_vector_indexes()
 
 
 db_manager.update_db_state(

@@ -121,8 +121,8 @@ class DatabaseManager:
         data has been fully inserted/promoted into the main table.
         """
         with self.get_cursor() as cur:
-            # Give PostgreSQL extra memory for the heavy index build
-            cur.execute("SET maintenance_work_mem = '1GB';")
+            # Give PostgreSQL extra memory of 500MB for the heavy index build 
+            cur.execute("SET maintenance_work_mem = '500MB';")
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS anime_sbert_hnsw_idx
                 ON anime_embedding USING hnsw (sbert_embedding vector_cosine_ops);

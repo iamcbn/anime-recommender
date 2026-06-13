@@ -1,8 +1,6 @@
 misc/
 backend/models
 backend/data_pipeline/artefacts
-!backend/data_pipeline/artefacts/.dataset_state.json
-
 
 # Virtual Environment
 anime/

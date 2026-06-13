@@ -72,8 +72,9 @@ def download_dataset():
 download_dataset()
 print("Dataset download complete.")
 
-# Derive the next dataset_version from the DATABASE
-STATE_VERSION = (db_state_version or 0) + 1
+# Derive STATE_VERSION from the actual directory that check_and_prepare created,
+# ensuring the Preprocessor reads from exactly the same path the data was downloaded to.
+STATE_VERSION = int(path.name.lstrip("v"))
 
 
 

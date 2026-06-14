@@ -62,7 +62,18 @@ class DatabaseManager:
         else:
             raise ValueError(f"Unsupported model: {model}")
 
+        internal_limit = max(top_k * 5, 200)
+
         query = f"""
+            WITH top_embeddings AS (
+                SELECT 
+                    id, 
+                    embedding_text, 
+                    {distance_col} <=> %s AS distance
+                FROM anime_embedding
+                ORDER BY {distance_col} <=> %s
+                LIMIT {internal_limit}
+            )
             SELECT
                 core.id,
                 core.title_romaji,
@@ -72,14 +83,14 @@ class DatabaseManager:
                 embed.embedding_text,
                 core.title_userPreferred,
                 core.synonyms,
-                1 - ({distance_col} <=> %s) AS cosine_similarity
-            FROM anime_core AS core
-            JOIN anime_embedding AS embed
+                1 - embed.distance AS cosine_similarity
+            FROM top_embeddings AS embed
+            JOIN anime_core AS core
                 ON core.id = embed.id
             JOIN anime_content AS content
                 ON core.id = content.id
             WHERE (%s OR content.isAdult = FALSE)
-            ORDER BY {distance_col} <=> %s
+            ORDER BY embed.distance
             LIMIT %s;
         """
 
@@ -88,8 +99,8 @@ class DatabaseManager:
                 query,
                 (
                     query_vector,
-                    allow_adult,
                     query_vector,
+                    allow_adult,
                     top_k,
                 ),
             )

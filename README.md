@@ -4,235 +4,24 @@ A semantic anime recommendation system built on a two-stage neural retrieval and
 
 Served through a FastAPI backend with API key authentication and rate limiting, and fully deployed to production on Modal serverless GPUs.
 
----
-
-## System Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     DATA PIPELINE                       │
-│                   (run_pipeline.py)                     │
-│                                                         │
-│  Kaggle API ──► Version Check ──► Download              │
-│       │                                                 │
-│       ▼                                                 │
-│  Preprocessor                                           │
-│    • Clean descriptions (HTML, encoding)                │
-│    • Filter MUSIC format entries                        │
-│    • Parse JSON columns                                 │
-│    • Filter by relationship type                        │
-│    • Build embedding_text (title + synopsis +           │
-│      genres + tags)                                     │
-│    • Split into 5 normalised tables                     │
-│       │                                                 │
-│       ▼                                                 │
-│  Embedder                                               │
-│    • Train / load FastText on corpus                    │
-│    • Generate MiniLM embeddings (384-dim)               │
-│    • Generate FastText embeddings (300-dim)             │
-│       │                                                 │
-│       ▼                                                 │
-│  DatabaseManager                                        │
-│    • Write to temp tables (staging)                     │
-│    • Drop HNSW indexes                                  │
-│    • Promote temp ──► main tables                       │
-│    • Rebuild HNSW indexes                               │
-│    • Cleanup temp tables                                │
-│    • Record dataset version + kaggle_version in db_state│
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│                RECOMMENDATION PIPELINE                  │
-│                   (rag_pipeline.py)                     │
-│                                                         │
-│  User Query                                             │
-│       │                                                 │
-│       ▼                                                 │
-│  Embedder                                               │
-│    • MiniLM embedding (384-dim)                         │
-│    • FastText embedding (300-dim)                       │
-│       │                                                 │
-│       ▼                                                 │
-│  DatabaseManager (connection-pooled)                    │
-│    • pgvector HNSW cosine search (SBERT) ──► top 50     │
-│    • pgvector HNSW cosine search (FastText) ──► top 50  │
-│    • Both searches run concurrently via ThreadPool      │
-│       │                                                 │
-│       ▼                                                 │
-│  Ranker                                                 │
-│    • Merge & deduplicate by anime ID                    │
-│    • Cross-encoder reranking                            │
-│    • Franchise collapse (fuzzy dedup)                   │
-│    • Serialise to JSON                                  │
-│       │                                                 │
-│       ▼                                                 │
-│  FastAPI Response (Deployed on Modal)                   │
-└─────────────────────────────────────────────────────────┘
-```
+> **📖 Further Reading:** For a deep-dive into the system design, models, database schema, and pipeline internals, see [ARCHITECTURE.md](ARCHITECTURE.md). For the development history and troubleshooting notes, see [docs/DEVELOPER_JOURNAL.md](docs/DEVELOPER_JOURNAL.md).
 
 ---
 
-## Models
+## How It Works
 
-| Role | Model | Dimension |
-|------|-------|-----------|
-| Semantic retrieval | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 |
-| Keyword / title retrieval | Custom FastText (`anime_fasttext.bin`) | 300 |
-| Reranker | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | — |
-
-**Why two retrieval models?**
-MiniLM captures semantic meaning across multilingual text, making it strong for synopsis and thematic matching. The FastText model is trained directly on the anime corpus using a skipgram approach, making it stronger for anime titles, Romanji, and rare vocabulary. Together they provide broader candidate coverage before the reranker scores them.
-
-**Why this cross-encoder?**
-`mmarco-mMiniLMv2-L12-H384-v1` is trained on multilingual data and handles Romanji well. Unlike the bi-encoders which embed query and candidate independently, the cross-encoder reads both together and produces a relevance score that accounts for narrative similarity, genre overlap, and tone.
-
-Models are downloaded from Hugging Face automatically on first run if not found locally. All models run on GPU if available, falling back to CPU automatically.
+1. **You describe** what you want to watch in plain text (English only for now).
+2. **Two embedding models** (MiniLM for semantics, FastText for anime-specific vocabulary) convert your query into vectors.
+3. **pgvector HNSW indexes** retrieve the top candidates from a PostgreSQL database in milliseconds.
+4. **A cross-encoder reranker** scores every candidate against your query and returns the best matches.
 
 ---
 
-## Project Structure
-
-```
-ANIME_RECOMMENDER/
-├── .github/
-│   └── workflows/
-│       └── update_data.yaml               # GitHub Actions: weekly data refresh & Supabase Sync
-├── backend/
-│   ├── data_pipeline/
-│   │   ├── artefacts/                    # Versioned local dataset storage
-│   │   │   └── v{n}/
-│   │   │       ├── raw_data/             # Downloaded .xlsx from Kaggle
-│   │   │       └── metadata/             # Dataset and Kaggle metadata
-│   │   ├── helper/
-│   │   │   ├── fetch_data.py             # KaggleDataVersionManager
-│   │   │   ├── preprocess.py             # Preprocessor
-│   │   │   ├── embedding.py              # Embedder (pipeline version)
-│   │   │   └── database.py              # DatabaseManager + SQL schemas
-│   │   ├── __init__.py
-│   │   ├── config.py                     # DB config loader (env-var based)
-│   │   ├── requirements.txt
-│   │   ├── run_pipeline.py              # Pipeline entry point
-│   │   ├── .dockerignore
-│   │   └── Dockerfile                    # Multi-stage build (CPU)
-│   ├── models/                           # Shared model storage (mounted as volume)
-│   │   ├── cross-encoder-mmarco-mMiniLMv2-L12-H384-v1/
-│   │   ├── paraphrase-multilingual-MiniLM-L12-v2/
-│   │   ├── anime_fasttext.bin            # Corpus-trained FastText model
-│   │   └── anime_fasttext.txt            # FastText training corpus
-│   ├── rag_pipeline/
-│   │   ├── helper/
-│   │   │   ├── service_embedding.py      # Embedder (inference version)
-│   │   │   ├── retrieval.py              # DatabaseManager (query version)
-│   │   │   └── ranking.py               # Ranker: reranking + franchise collapse
-│   │   ├── __init__.py
-│   │   ├── config.py                     # DB config loader (env-var based)
-│   │   ├── main.py                       # FastAPI app entry point
-│   │   ├── rag_pipeline.py              # Pipeline orchestrator
-│   │   ├── requirements.txt
-│   │   ├── .dockerignore
-│   │   └── Dockerfile                    # Multi-stage build (CUDA)
-│   └── __init__.py
-├── misc/
-├── anime/
-├── .env                                  # Single source of truth for all credentials
-├── modal_deploy.py                       # Modal production deployment script
-├── docker-compose.yaml                   # Wires services and shared model volume
-└── README.md
-```
-
----
-
-## Production Architecture
-
-The stack is designed for minimal operational overhead, cost efficiency, and fast inference:
-
-1. **Database (Supabase):** Managed PostgreSQL running remotely, configured with native `pgvector` support for cosine similarity search.
-2. **Data Pipeline (GitHub Actions):** Fully automated CI/CD pipeline triggered via cron (every Sunday at 3 AM UTC). It connects directly to Supabase to ingest and sync the latest Kaggle datasets without manual intervention.
-3. **API Hosting (Modal):** The FastAPI RAG system is deployed serverless on Modal (`modal_deploy.py`), taking advantage of Modal's automatic scaling and T4 GPU allocation. The deployment securely mounts local models, injects environment secrets, and achieves fast cold-starts.
-
----
-
-## Database Schema
-
-The dataset is split into five normalised tables, all linked by `id`:
-
-| Table | Contents |
-|-------|----------|
-| `anime_core` | Titles (English, Romaji, native, preferred), synonyms, cover images, MAL ID, site URL |
-| `anime_content` | Description, genres, tags, format, source, country, adult flag, studios, relationship type |
-| `anime_temporal` | Season, year, episodes, duration, status, start/end dates |
-| `anime_metrics` | Average score, mean score, popularity, favourites, trending, rankings, recommendations |
-| `anime_embedding` | `embedding_text`, `sbert_embedding vector(384)`, `fasttext_embedding vector(300)` |
-
-Embeddings are stored using the `pgvector` extension. Similarity search uses the `<=>` cosine distance operator directly in SQL.
-
----
-
-## Data Pipeline
-
-The pipeline in `run_pipeline.py` handles the full lifecycle from Kaggle to the database. It only runs when a newer dataset version is detected.
-
-### Step 1: Version Check
-
-`KaggleDataVersionManager` queries the Kaggle API for the remote dataset version and compares it against the `kaggle_version` stored in the `db_state` table in PostgreSQL (falling back to the local `.dataset_state.json` if the database value is `NULL`). Using the database as the primary source of truth ensures the staleness check works correctly in ephemeral CI environments like GitHub Actions, where the local JSON file does not persist between runs. If the remote version is newer (or no known version exists), a new versioned directory is created under `artefacts/v{n}/`.
-
-### Step 2: Download
-
-The dataset (`anilist_anime_data_complete.xlsx`) is downloaded into `artefacts/v{n}/raw_data/`. The download uses exponential backoff retry (up to 5 attempts) to handle SSL errors.
-
-### Step 3: Preprocessing (`Preprocessor`)
-
-- HTML entities decoded and tags stripped from descriptions
-- MUSIC format entries removed
-- JSON-stringified columns (`synonyms`, `genres`, `tags`, `studios`, `rankings`, `recommendations`) parsed into Python objects
-- Entries with no description dropped
-- Entries filtered by relationship type: SEQUEL, PREQUEL, SPIN_OFF, and SIDE_STORY are kept; ADAPTATION, ALTERNATIVE, CHARACTER, PARENT, OTHER, and SUMMARY are dropped
-- Each anime is assigned a `relationship_type` label
-- `embedding_text` constructed by joining: all title variants (separated by ` | `), synopsis, genres, and tag names
-
-The preprocessed data is split into the five tables above and returned as a dictionary.
-
-### Step 4: Embedding (`Embedder`)
-
-- MiniLM encodes all `embedding_text` values in batches of 64 with L2 normalisation
-- FastText is trained from scratch on the `embedding_text` corpus using skipgram (dim=300, 25 epochs, lr=0.03, minCount=2) if no model exists or `retrain_fasttext=True` is set; otherwise the saved model is loaded
-- Both embedding columns are added to the `anime_embedding` DataFrame before database insertion
-
-### Step 5: Staging and Promotion
-
-Data is written to temporary tables (`t{table_name}`) first. If batch insertion fails on any row, the pipeline falls back to row-by-row insertion and logs the exact failing row and column. Once all temp tables are populated successfully, HNSW vector indexes are dropped to avoid row-by-row index updates during bulk insertion. Data is then promoted to the main tables via `TRUNCATE ... CASCADE` followed by `INSERT ... SELECT`. After promotion, HNSW indexes are rebuilt from scratch on the freshly populated table (with `maintenance_work_mem` temporarily set to `1GB` for the session). Temp tables are dropped after promotion.
-
-### Step 6: State Recording
-
-The dataset version (`dataset_version`), the Kaggle remote version timestamp (`kaggle_version`), and the current timestamp are written to the `db_state` table in PostgreSQL. The local `.dataset_state.json` is also updated and committed back to the repository via a GitHub Actions step. Both the `dataset_version` and `kaggle_version` are derived from the database (the only persistent store in CI), ensuring they increment correctly across ephemeral Docker runs. State is only recorded after the entire pipeline completes successfully to prevent partial-run false positives.
-
----
-
-## Recommendation Pipeline
-
-### Embedding (`service_embedding.py`)
-
-The query is embedded independently by both models:
-- MiniLM: L2-normalised 384-dim dense vector
-- FastText: sentence vector from the anime-trained model, L2-normalised to 300-dim
-
-### Retrieval (`retrieval.py`)
-
-Two pgvector cosine similarity queries run **concurrently** against `anime_embedding` using `concurrent.futures.ThreadPoolExecutor`, one per model, each returning the top 50 candidates. Both queries are accelerated by HNSW (Hierarchical Navigable Small World) indexes on the `sbert_embedding` and `fasttext_embedding` columns, replacing the previous sequential scan approach. The `DatabaseManager` uses a `psycopg2.pool.ThreadedConnectionPool` (min 2, max 5 connections) to eliminate per-request TCP connection overhead; each thread leases its own connection from the pool. Adult content is filtered at the database level via the `isAdult` flag in `anime_content`. Dimension validation is enforced before each query (384 for SBERT, 300 for FastText) and raises a `ValueError` before hitting the database if incorrect.
-
-### Reranking and Franchise Collapse (`ranking.py`)
-
-SBERT and FastText candidates are merged and deduplicated by anime ID. The cross-encoder scores every (query, candidate) pair simultaneously and results are sorted descending by score.
-
-Before returning, a franchise collapse step removes near-duplicate entries from the same franchise. Titles are normalised by stripping subtitles after colons, removing bracketed content, and removing noise words (movie, season, part, arc, etc.). Normalised titles are compared using `rapidfuzz.token_set_ratio` with a threshold of 90. Only the highest-ranked entry per franchise cluster is kept. The final list is truncated to `top_k`.
-
----
-
-## API & Deployment
+## API Usage
 
 ### Authentication
 
-All requests require an API key in the request header:
+All requests require an API key in the header:
 
 ```
 access_token: <your_api_key>
@@ -244,19 +33,11 @@ Invalid or missing keys return `403 Forbidden`.
 
 20 requests per minute per API key. Exceeding this returns `429 Too Many Requests`.
 
-### Production Deployment (Modal)
-
-The backend is seamlessly deployed to Modal using the `modal_deploy.py` script. To deploy:
-
-1. Ensure your `.env` contains all API keys (e.g. Supabase, standard API keys).
-2. Run Modal deploy:
-```bash
-modal deploy modal_deploy.py
-```
-
 ### Endpoints
 
 #### `GET /`
+
+Health check.
 
 ```json
 {
@@ -321,7 +102,7 @@ The `extra.timings` field breaks down latency per pipeline stage in milliseconds
 
 - Python 3.11+
 - PostgreSQL with the `pgvector` extension
-- Kaggle API credentials in `.env` file
+- Kaggle API credentials
 - Docker and Docker Compose
 
 ### Environment Variables
@@ -364,91 +145,28 @@ uvicorn rag_pipeline.main:app --reload
 
 ### Running with Docker
 
-We use **multi-stage Docker builds** to keep images lean. The data pipeline uses a CPU-only image (optimised for GitHub Actions runners), while the RAG pipeline includes CUDA support for GPU acceleration.
-
-By default, the `docker-compose.yaml` runs on the CPU to ensure anyone can clone and run the project without driver errors:
+By default, the `docker-compose.yaml` runs on CPU so anyone can clone and run without GPU drivers:
 
 ```bash
 docker compose up
 ```
 
-Models are mounted from `./backend/models` into each container at `/app/models`. The `rag_pipeline` service picks up updated FastText models automatically after each `data_pipeline` run without a rebuild.
-
-**Enabling Fast GPU Acceleration (Optional):**
-If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, you can use the built-in `gpu` profile. This launches a dedicated GPU-enabled version of the API on port `8001`:
+**GPU Acceleration (Optional):**
+If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed:
 
 ```bash
 docker compose --profile gpu up
 ```
 
-The Python code automatically detects GPU availability at runtime (`torch.cuda.is_available()`), so no code changes are needed. The API endpoints will be available at:
-- `http://localhost:8000` (CPU - Standard)
-- `http://localhost:8001` (GPU - Accelerated)
+The API endpoints will be available at:
+- `http://localhost:8000` — CPU (Standard)
+- `http://localhost:8001` — GPU (Accelerated)
 
----
+### Deploying to Modal
 
-## Tradeoffs, Issues Encountered, & Blockers
-
-During the containerisation and development phase, several critical engineering hurdles were tackled:
-
-1. **Host-Level DNS Blocking Docker Pulls:**
-   * **Issue:** Docker image builds failed with `dial tcp: lookup auth.docker.io: no such host`.
-   * **Cause/Fix:** The local router/ISP was silently blocking Docker Hub DNS resolution. Fixed by temporarily overriding Windows host Wi-Fi DNS to `8.8.8.8` (Google Public DNS).
-
-2. **Missing Dependencies (`openpyxl`):**
-   * **Issue:** `pandas.read_excel()` threw a `ModuleNotFoundError` during the data pipeline.
-   * **Fix:** The Kaggle dataset is an `.xlsx` file. Added `openpyxl==3.1.5` (minimum version required by Pandas 3.0.0) to `requirements.txt`.
-
-3. **State Management Bug in Pipeline:**
-   * **Issue:** If the pipeline crashed mid-execution (e.g., during embedding), it still reported "Dataset already up to date" on the next run, preventing recovery.
-   * **Fix:** The dataset state was being recorded immediately after download (before processing). Moved `_record_version()` to the very end of the pipeline to ensure state is only saved after the entire pipeline succeeds.
-
-4. **Hugging Face Model Identifier Typo (401 Unauthorized):**
-   * **Issue:** Docker container crashed with `Repository Not Found` when trying to download the SBERT model.
-   * **Cause:** The script used `paraphrase/multilingual-MiniLM-L12-v2`, which Hugging Face interpreted as a user named `paraphrase`. Locally, this bug was hidden because the model folder already existed on disk and the download path was never triggered.
-   * **Fix:** Changed to the correct identifier: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
-
-5. **CPU vs GPU Image Size Tradeoff:**
-   * **Tradeoff:** Installing PyTorch with CUDA support increases the Docker image size significantly (~4 GB vs ~1.5 GB for CPU-only).
-   * **Decision:** The RAG API uses the CUDA-enabled image for production inference speed. The Data Pipeline uses a lean CPU-only image since it runs on standard GitHub Actions runners. Both use multi-stage builds to strip out build tools (`build-essential`) from the final image.
-
----
-
-## Change Management (Changelog)
-
-> Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
-
-### v1.3.0 (Current): Retrieval Latency Optimization & Pipeline State Fixes
-- **HNSW Vector Indexes:** Added pgvector HNSW indexes on `sbert_embedding` and `fasttext_embedding` columns, replacing sequential scans with fast approximate nearest-neighbour search. Indexes are automatically dropped before bulk data promotion and rebuilt after, avoiding row-by-row index update penalties during the weekly pipeline run.
-- **Connection Pooling:** Refactored the RAG pipeline's `DatabaseManager` to use `psycopg2.pool.ThreadedConnectionPool`, eliminating ~50-100ms of TCP handshake overhead per request.
-- **Concurrent Retrieval:** SBERT and FastText similarity searches now execute in parallel via `concurrent.futures.ThreadPoolExecutor`, cutting retrieval wall-clock time roughly in half.
-- **Dataset Version Fix:** Fixed `dataset_version` in `db_state` always being `1` by deriving it from the database instead of the ephemeral local JSON file.
-- **Kaggle Version Tracking:** Added `kaggle_version` column to `db_state` so the pipeline can skip unnecessary downloads when the Kaggle dataset hasn't changed between runs.
-- **State Persistence in CI:** Updated the GitHub Actions workflow to mount a volume for the artefacts directory and commit `.dataset_state.json` back to the repository after each pipeline run.
-
-### v1.2.0: Production Deployment & CI/CD Pipelines
-- **Modal Integration:** Created `modal_deploy.py` to deploy the FastAPI app onto serverless T4 GPUs with built-in dependency management and local model syncing.
-- **Supabase Connectivity:** Successfully pointed the data pipelines and recommendation system to the managed Supabase PostgreSQL instance.
-- **Automated Sync:** Configured GitHub Actions to automatically run `data_pipeline` against the remote Supabase database without manual intervention.
-- **Latency Diagnostics:** Profiled the `/recommend` endpoint, uncovering high retrieval latency due to missing `pgvector` indexes and sequential queries.
-
-### v1.1.0: Dockerisation & CI/CD
-- Added `docker-compose.yaml` wiring PostgreSQL (pgvector), Data Pipeline, and RAG Pipeline
-- Implemented Docker Compose `gpu` profiles for seamless hardware switching
-- Implemented multi-stage Docker builds to reduce image sizes
-- Data Pipeline Dockerfile: CPU-only, optimised for GitHub Actions
-- RAG Pipeline Dockerfile: CUDA-enabled, optimised for serverless GPU deployment
-- Wrote GitHub Actions workflow (`update_data.yml`) for automated weekly pipeline execution
-- Fixed Hugging Face model resolution paths for cold-start (empty volume) environments
-- Fixed state management bug: `_record_version()` moved to end of pipeline
-- Added `openpyxl` to data pipeline dependencies
-- Updated `.env` variable names to align with Kaggle Python library (`KAGGLE_KEY`)
-
-### v1.0.0: Core Pipeline Complete
-- Implemented two-stage retrieval (MiniLM + FastText)
-- Implemented Cross-Encoder reranking and Franchise Collapse (fuzzy matching via rapidfuzz)
-- Designed normalised 5-table PostgreSQL schema using `pgvector`
-- Built FastAPI wrapper with API key authentication and rate limiting (20 req/min)
+```bash
+modal deploy modal_deploy.py
+```
 
 ---
 
@@ -456,26 +174,22 @@ During the containerisation and development phase, several critical engineering 
 
 | Component | Status |
 |-----------|--------|
-| Data pipeline (fetch, preprocess, embed, load) | Done |
-| Retrieval pipeline | Done |
-| Reranking pipeline | Done |
-| FastAPI backend | Done |
-| API key auth + rate limiting | Done |
-| Docker containerisation | Done |
-| Automatic data refresh (GitHub Actions) | Done |
-| Live PostgreSQL database (Supabase) | Done |
-| Serverless API hosting (Modal) | Done |
-| Retrieval Latency Optimizations | Done |
-| LLM Integration | In progress |
-| Frontend | To Do |
+| Data pipeline (fetch, preprocess, embed, load) | ✅ Done |
+| Retrieval pipeline | ✅ Done |
+| Reranking pipeline | ✅ Done |
+| FastAPI backend | ✅ Done |
+| API key auth + rate limiting | ✅ Done |
+| Docker containerisation | ✅ Done |
+| Automatic data refresh (GitHub Actions) | ✅ Done |
+| Live PostgreSQL database (Supabase) | ✅ Done |
+| Serverless API hosting (Modal) | ✅ Done |
+| Retrieval latency optimizations | ✅ Done |
+| LLM integration | 🔄 In Progress |
+| Frontend | 📋 To Do |
 
 ---
 
 ## Planned Improvements
-
-### Next Iteration
-
-### Future Improvements
 
 - Fine-tune the cross-encoder on anime-specific relevance data
 - Add query result caching for frequent searches

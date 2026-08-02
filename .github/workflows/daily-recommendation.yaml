@@ -1,9 +1,9 @@
-name: Daily Anime Recommender Test
+name: Hourly Anime Recommender Test
 
 on:
-  # Fires every day at 8:00 PM UTC
+  # Fires every hour
   schedule:
-    - cron: '0 20 * * *'
+    - cron: '0 * * * *'
 
   # Allow manual runs from the GitHub Actions tab (great for testing)
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  daily-recommendation:
+  hourly-recommendation:
     runs-on: ubuntu-latest
 
     steps:
@@ -40,13 +40,13 @@ jobs:
           pip install requests google-genai
 
       # -----------------------------------------------------------------------
-      # 4. Run the daily recommendation script
+      # 4. Run the hourly recommendation script
       # -----------------------------------------------------------------------
-      - name: Run daily_run.py
+      - name: Run hourly_run.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MODAL_ACCESS_TOKEN: ${{ secrets.MODAL_ACCESS_TOKEN }}
-        run: python scripts/daily_run.py
+        run: python scripts/hourly_run.py
 
       # -----------------------------------------------------------------------
       # 5. Commit and push updated anime_results.jsonl (if it changed)

@@ -202,60 +202,79 @@ def main() -> None:
         print("ERROR: MODAL_ACCESS_TOKEN environment variable is not set.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Step 1: Generate prompt via Gemini ---
-    print("Generating anime description via Gemini...")
-    try:
-        generated = generate_prompt_via_gemini(gemini_api_key)
-    except Exception as exc:
-        print(f"ERROR: Gemini generation failed — {exc}", file=sys.stderr)
-        sys.exit(1)
+    NUM_RUNS = 4
+    successful_runs = 0
+    failed_runs = 0
 
-    description = generated["description"]
-    difficulty = generated["difficulty"]
-    ground_truth = generated["ground_truth"]
-    genre = generated["genre"]
+    for i in range(NUM_RUNS):
+        print(f"\n{'='*50}")
+        print(f"Run {i + 1} of {NUM_RUNS}")
+        print(f"{'='*50}")
 
-    print(f"  Description : {description}")
-    print(f"  Difficulty  : {difficulty}/10")
-    print(f"  Ground truth: {ground_truth}")
-    print(f"  Genre       : {genre}")
-
-    # --- Step 2: Call the Modal recommender API ---
-    print("\nSending request to Modal API...")
-    try:
-        response = call_recommender_api(description, modal_access_token)
-    except requests.exceptions.RequestException as exc:
-        print(f"ERROR: API request failed — {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"  HTTP Status : {response.status_code}")
-
-    # --- Step 3: Persist result if successful ---
-    if response.status_code == 200:
+        # --- Step 1: Generate prompt via Gemini ---
+        print("Generating anime description via Gemini...")
         try:
-            api_result = response.json()
-        except json.JSONDecodeError:
-            api_result = {"raw_response": response.text}
+            generated = generate_prompt_via_gemini(gemini_api_key)
+        except Exception as exc:
+            print(f"ERROR: Gemini generation failed — {exc}", file=sys.stderr)
+            failed_runs += 1
+            continue  # Skip to the next run instead of aborting all 4
 
-        record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "genre": genre,
-            "description": description,
-            "difficulty": difficulty,
-            "ground_truth": ground_truth,
-            "api_response": api_result,
-            "status_code": response.status_code,
-        }
+        description = generated["description"]
+        difficulty = generated["difficulty"]
+        ground_truth = generated["ground_truth"]
+        genre = generated["genre"]
 
-        append_result(record)
-        print("Done! Result saved successfully.")
-    else:
-        print(
-            f"WARNING: API returned non-200 status ({response.status_code}). "
-            "Result NOT saved.",
-            file=sys.stderr,
-        )
-        print(f"  Response body: {response.text[:500]}", file=sys.stderr)
+        print(f"  Description : {description}")
+        print(f"  Difficulty  : {difficulty}/10")
+        print(f"  Ground truth: {ground_truth}")
+        print(f"  Genre       : {genre}")
+
+        # --- Step 2: Call the Modal recommender API ---
+        print("\nSending request to Modal API...")
+        try:
+            response = call_recommender_api(description, modal_access_token)
+        except requests.exceptions.RequestException as exc:
+            print(f"ERROR: API request failed — {exc}", file=sys.stderr)
+            failed_runs += 1
+            continue  # Skip to the next run instead of aborting all 4
+
+        print(f"  HTTP Status : {response.status_code}")
+
+        # --- Step 3: Persist result if successful ---
+        if response.status_code == 200:
+            try:
+                api_result = response.json()
+            except json.JSONDecodeError:
+                api_result = {"raw_response": response.text}
+
+            record = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "genre": genre,
+                "description": description,
+                "difficulty": difficulty,
+                "ground_truth": ground_truth,
+                "api_response": api_result,
+                "status_code": response.status_code,
+            }
+
+            append_result(record)
+            print(f"Run {i + 1} saved successfully.")
+            successful_runs += 1
+        else:
+            print(
+                f"WARNING: API returned non-200 status ({response.status_code}). "
+                "Result NOT saved.",
+                file=sys.stderr,
+            )
+            print(f"  Response body: {response.text[:500]}", file=sys.stderr)
+            failed_runs += 1
+
+    # --- Summary ---
+    print(f"\n{'='*50}")
+    print(f"Done. {successful_runs}/{NUM_RUNS} runs saved successfully.")
+    if failed_runs > 0:
+        print(f"WARNING: {failed_runs} run(s) failed.", file=sys.stderr)
         sys.exit(1)
 
 

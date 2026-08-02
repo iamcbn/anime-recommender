@@ -202,7 +202,7 @@ def main() -> None:
         print("ERROR: MODAL_ACCESS_TOKEN environment variable is not set.", file=sys.stderr)
         sys.exit(1)
 
-    NUM_RUNS = 2
+    NUM_RUNS = 4
     successful_runs = 0
     failed_runs = 0
 

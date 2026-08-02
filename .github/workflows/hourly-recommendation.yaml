@@ -43,6 +43,8 @@ jobs:
       # 4. Run the hourly recommendation script
       # -----------------------------------------------------------------------
       - name: Run hourly_run.py
+        id: run_script
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MODAL_ACCESS_TOKEN: ${{ secrets.MODAL_ACCESS_TOKEN }}
@@ -51,7 +53,9 @@ jobs:
       # -----------------------------------------------------------------------
       # 5. Commit and push updated anime_results.jsonl (if it changed)
       # -----------------------------------------------------------------------
+      # Always runs — even if the script step had partial failures
       - name: Commit and push results
+        if: always()
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -63,6 +67,13 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to anime_results.jsonl — nothing to commit."
           else
-            git commit -m "chore: append daily anime recommendation result [$(date -u '+%Y-%m-%d')]"
+            git commit -m "chore: append hourly anime recommendation result [$(date -u '+%Y-%m-%dT%H:%M:%SZ')]"
             git push
           fi
+
+      # Re-raise the script failure AFTER the commit so the job is still marked red
+      - name: Propagate script failure
+        if: steps.run_script.outcome == 'failure'
+        run: |
+          echo "Script had partial failures — marking job as failed."
+          exit 1

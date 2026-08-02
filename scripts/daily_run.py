@@ -125,7 +125,7 @@ def generate_prompt_via_gemini(api_key: str) -> dict:
                 contents=f"Generate today's anime description. Focus on a {selected_vibe} anime.",
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=512,
+                    max_output_tokens=1024,
                     # Enforce the Pydantic schema natively
                     response_mime_type="application/json",
                     response_schema=AnimeQuizItem,

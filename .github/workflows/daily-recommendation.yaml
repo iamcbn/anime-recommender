@@ -1,0 +1,68 @@
+name: Daily Anime Recommender Test
+
+on:
+  # Fires every day at 8:00 PM UTC
+  schedule:
+    - cron: '0 20 * * *'
+
+  # Allow manual runs from the GitHub Actions tab (great for testing)
+  workflow_dispatch:
+
+# Grant write access so the action can commit anime_results.jsonl back to main
+permissions:
+  contents: write
+
+jobs:
+  daily-recommendation:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Check out the repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Set up Python
+      # -----------------------------------------------------------------------
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # -----------------------------------------------------------------------
+      # 3. Install dependencies
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests google-genai
+
+      # -----------------------------------------------------------------------
+      # 4. Run the daily recommendation script
+      # -----------------------------------------------------------------------
+      - name: Run daily_run.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MODAL_ACCESS_TOKEN: ${{ secrets.MODAL_ACCESS_TOKEN }}
+        run: python scripts/daily_run.py
+
+      # -----------------------------------------------------------------------
+      # 5. Commit and push updated anime_results.jsonl (if it changed)
+      # -----------------------------------------------------------------------
+      - name: Commit and push results
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage only the results file
+          git add anime_results.jsonl
+
+          # Only commit if there are actual changes
+          if git diff --cached --quiet; then
+            echo "No changes to anime_results.jsonl — nothing to commit."
+          else
+            git commit -m "chore: append daily anime recommendation result [$(date -u '+%Y-%m-%d')]"
+            git push
+          fi

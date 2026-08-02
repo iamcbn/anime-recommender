@@ -60,6 +60,7 @@ Mix well-known hits with deeply obscure cult classics to keep it interesting.
 
 # Response structure
 class AnimeQuizItem(BaseModel):
+    genre: str = Field(description="The genre or vibe of the anime (e.g. shounen, isekai, psychological).")
     description: str = Field(description="A vague, creative anime description.")
     difficulty: int = Field(description="An integer between 1 and 10 — 1 is very easy, 10 is very hard.")
     ground_truth: str = Field(description="The exact anime title being secretly referred to.")
@@ -135,8 +136,10 @@ def generate_prompt_via_gemini(api_key: str) -> dict:
             # Attempt to parse the response
             response_text = response.text.strip()
             quiz_json = json.loads(response_text)
+            # Inject the locally-chosen genre before Pydantic validates
+            quiz_json["genre"] = selected_vibe
             quiz_data = AnimeQuizItem(**quiz_json)
-            
+
             return quiz_data.model_dump()
         
         except json.JSONDecodeError as e:
@@ -210,10 +213,12 @@ def main() -> None:
     description = generated["description"]
     difficulty = generated["difficulty"]
     ground_truth = generated["ground_truth"]
+    genre = generated["genre"]
 
     print(f"  Description : {description}")
     print(f"  Difficulty  : {difficulty}/10")
     print(f"  Ground truth: {ground_truth}")
+    print(f"  Genre       : {genre}")
 
     # --- Step 2: Call the Modal recommender API ---
     print("\nSending request to Modal API...")
@@ -234,6 +239,7 @@ def main() -> None:
 
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "genre": genre,
             "description": description,
             "difficulty": difficulty,
             "ground_truth": ground_truth,

@@ -117,22 +117,40 @@ def generate_prompt_via_gemini(api_key: str) -> dict:
     ]
     selected_vibe = random.choice(genres)
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=f"Generate today's anime description. Focus on a {selected_vibe} anime.",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=512,
-            # Enforce the Pydantic schema natively
-            response_mime_type="application/json",
-            response_schema=AnimeQuizItem,
-        ),
-    )
-    
-    quiz_json = json.loads(response.text)
-    quiz_data = AnimeQuizItem(**quiz_json)
-    
-    return quiz_data.model_dump()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=f"Generate today's anime description. Focus on a {selected_vibe} anime.",
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=512,
+                    # Enforce the Pydantic schema natively
+                    response_mime_type="application/json",
+                    response_schema=AnimeQuizItem,
+                ),
+            )
+            
+            # Attempt to parse the response
+            response_text = response.text.strip()
+            quiz_json = json.loads(response_text)
+            quiz_data = AnimeQuizItem(**quiz_json)
+            
+            return quiz_data.model_dump()
+        
+        except json.JSONDecodeError as e:
+            if attempt < max_retries - 1:
+                print(f"  JSON parsing failed on attempt {attempt + 1}: {e}. Retrying...", file=sys.stderr)
+                continue
+            else:
+                raise Exception(f"Gemini response parsing failed after {max_retries} attempts: {e}. Response was: {response.text[:200]}")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"  Generation failed on attempt {attempt + 1}: {e}. Retrying...", file=sys.stderr)
+                continue
+            else:
+                raise
 
 
 

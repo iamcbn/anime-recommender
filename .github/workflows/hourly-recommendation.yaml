@@ -2,8 +2,8 @@ name: Hourly Anime Recommender Test
 
 on:
   # Fires every hour
-  schedule:
-    - cron: '0 * * * *'
+  # schedule:
+  #   - cron: '0 * * * *'
 
   # Allow manual runs from the GitHub Actions tab (great for testing)
   workflow_dispatch:

@@ -26,6 +26,7 @@ jobs:
       - name: Run Data Pipeline
         run: |
           mkdir -p ${{ github.workspace }}/artefacts
+          mkdir -p ${{ github.workspace }}/models
           docker run --rm \
             -e DB_HOST=${{ secrets.DB_HOST }} \
             -e DB_PORT=${{ secrets.DB_PORT }} \
@@ -34,6 +35,19 @@ jobs:
             -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
             -e KAGGLE_USERNAME=${{ secrets.KAGGLE_USERNAME }} \
             -e KAGGLE_KEY=${{ secrets.KAGGLE_KEY }} \
+            -e HF_TOKEN=${{ secrets.HF_TOKEN }} \
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
+            -v ${{ github.workspace }}/models:/app/models \
             anime-data-pipeline
+
+      - name: Upload Models to Modal
+        run: |
+          pip install modal
+          modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
+          
+          # Use Python API to ensure volume exists
+          python -c "import modal; modal.Volume.from_name('anime-models-vol', create_if_missing=True)"
+          
+          cd ${{ github.workspace }}/models
+          modal volume put anime-models-vol . /
 

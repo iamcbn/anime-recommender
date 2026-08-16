@@ -34,6 +34,7 @@ jobs:
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
             -v ${{ github.workspace }}/models:/app/models \
             anime-data-pipeline
+
       - name: Upload Models to Modal
         run: |
           pip install modal

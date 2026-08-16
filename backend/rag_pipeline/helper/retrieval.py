@@ -43,7 +43,6 @@ class DatabaseManager:
             top_k: int = 50,
             allow_adult: bool = False
             ):
-        
         query_vector = str(query_embedding)
         #print(len(query_embedding))
 

@@ -16,6 +16,8 @@ image = (
     .add_local_dir("./backend", remote_path="/root/backend")
 )
 
+volume = modal.Volume.from_name("anime-models-vol", create_if_missing=True)
+
 # Expose the FastAPI app via a Serverless ASGI endpoint
 @app.function(
     image=image,
@@ -23,6 +25,7 @@ image = (
     gpu="T4",     # Use a T4 GPU for inference
     # 10 minutes timeout
     timeout=600,
+    volumes={"/root/backend/models": volume},
 )
 @modal.asgi_app()
 def fastapi_app():

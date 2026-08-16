@@ -51,13 +51,13 @@ class DatabaseManager:
             if len(query_embedding) != 384:
                 raise ValueError("SBERT embedding must be 384-dim")
 
-            distance_col = "embed.sbert_embedding"
+            distance_col = "sbert_embedding"
 
         elif model == "fasttext":
             if len(query_embedding) != 300:
                 raise ValueError("fastText embedding must be 300-dim")
 
-            distance_col = "embed.fasttext_embedding"
+            distance_col = "fasttext_embedding"
 
         else:
             raise ValueError(f"Unsupported model: {model}")

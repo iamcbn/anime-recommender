@@ -52,7 +52,7 @@ jobs:
           modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
           
           # Create the volume explicitly using the Modal Python API to ensure it exists
-          python -c "import modal; modal.Volume.lookup('anime-models-vol', create_if_missing=True)"
+          python -c "import modal; modal.Volume.from_name('anime-models-vol', create_if_missing=True).hydrate()"
           
           cd ${{ github.workspace }}/models
-          modal volume put anime-models-vol . /
+          modal volume put --force anime-models-vol . /

@@ -1,3 +1,5 @@
+name: Weekly Data Pipeline Update
+
 on:
   # Run automatically every Sunday at 3:00 AM UTC
   schedule:
@@ -5,6 +7,7 @@ on:
   
   # Allow manual trigger from the GitHub Actions tab
   workflow_dispatch:
+
 jobs:
   update-database:
     runs-on: ubuntu-latest
@@ -12,12 +15,14 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
+
       - name: Build Data Pipeline Docker Image
         run: |
           # We build the image directly instead of using docker-compose
           # because docker-compose would try to spin up a local database.
           # We want to connect straight to our production Supabase DB!
           docker build -t anime-data-pipeline -f backend/data_pipeline/Dockerfile .
+
       - name: Run Data Pipeline
         run: |
           mkdir -p ${{ github.workspace }}/artefacts
@@ -34,6 +39,12 @@ jobs:
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
             -v ${{ github.workspace }}/models:/app/models \
             anime-data-pipeline
+
+      - name: Fix File Permissions
+        run: |
+          # Docker wrote these files as root; make them readable by the runner user
+          sudo chown -R "$(id -u):$(id -g)" ${{ github.workspace }}/models ${{ github.workspace }}/artefacts
+          sudo chmod -R u+rwX,go+rX ${{ github.workspace }}/models ${{ github.workspace }}/artefacts
 
       - name: Upload Models to Modal
         run: |

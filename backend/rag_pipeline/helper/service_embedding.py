@@ -4,7 +4,7 @@ import numpy as np, pandas as pd
 import fasttext
 import torch
 import logging
-from typing import Tuple
+from typing import Tuple, List
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +88,17 @@ class Embedder:
     # ----------------------
     
     def embed_text(self, text: str, model: str) -> np.ndarray:
-            if model == 'sbert':
-                embedding = self.sbert.encode([text], 
-                                            convert_to_numpy=True, 
-                                            normalize_embeddings=True)[0]
+        if model == 'sbert':
+            embedding = self.sbert.encode([text], 
+                                          convert_to_numpy=True, 
+                                          normalize_embeddings=True)[0]
 
-            elif model == 'fasttext':
-                embedding = self.fasttext.get_sentence_vector(text)
-                embedding = self._normalize(embedding)
+        elif model == 'fasttext':
+            text = text.replace('\n', ' ').replace('\r', ' ')
+            embedding = self.fasttext.get_sentence_vector(text)
+            embedding = self._normalize(embedding)
 
-            return embedding.tolist()
+        return embedding.tolist()
     
 
     def _normalize(self, vec: np.ndarray) -> np.ndarray:
@@ -109,13 +110,22 @@ class Embedder:
     # PUTTING THEM TOGETHER
     # ----------------------
 
-    def execute(self, query) -> Tuple[np.ndarray, np.ndarray]:
-        sbert_embedding = self.embed_text(query, 'sbert')
-        fasttext_embedding = self.embed_text(query, 'fasttext')
+    def execute(self, queries: List[str]) -> List[Tuple[List, List]]:
+        """
+        Embeds a list of query strings with both SBERT and FastText.
 
-        return sbert_embedding, fasttext_embedding
+        Args:
+            queries: A list of query strings, e.g. [original, query_b, query_c].
 
-    
-    
+        Returns:
+            A list of (sbert_embedding, fasttext_embedding) tuples,
+            one per input query, in the same order.
+        """
+        results = []
+        for query in queries:
+            sbert_embedding = self.embed_text(query, 'sbert')
+            fasttext_embedding = self.embed_text(query, 'fasttext')
+            results.append((sbert_embedding, fasttext_embedding))
+        return results
 
 

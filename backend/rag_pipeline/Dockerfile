@@ -16,9 +16,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY backend/rag_pipeline/requirements.txt .
 
-# Install PyTorch with CUDA 11.8 support (Enables GPU acceleration)
-RUN pip install --no-cache-dir torch==2.7.1+cu118 \
-    --index-url https://download.pytorch.org/whl/cu118
+# Install PyTorch for CPU (saves massive space since CUDA isn't needed here)
+RUN pip install --no-cache-dir torch==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining requirements
 RUN pip install --no-cache-dir -r requirements.txt

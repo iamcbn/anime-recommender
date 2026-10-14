@@ -70,13 +70,34 @@ class Ranker:
     # Merging and deduplicating
     # -------------------------
 
-    def merge_deduplicate(self, sbert_result, fasttext_result) -> pd.DataFrame :
-        result = sbert_result + fasttext_result
+    def merge_deduplicate(self, all_results: list) -> pd.DataFrame:
+        """
+        Takes a list of ranked lists from different searches (MiniLM, FastText, BM25),
+        calculates the RRF (Reciprocal Rank Fusion) score across them, and deduplicates.
+        """
         col = ['id', 'title_romaji', 'title_english', 'coverImage_large', 'isAdult',
-               'embedding_text', 'title_userPreferred', 'synonyms', 'cosine_similarity']
-        df = pd.DataFrame(result, columns=col)
-
-        return df.drop_duplicates('id')
+               'embedding_text', 'title_userPreferred', 'synonyms', 'description', 'popularity', 'cosine_similarity']
+        
+        rrf_scores = {}
+        row_data = {}
+        k = 20
+        
+        for ranked_list in all_results:
+            for rank, row in enumerate(ranked_list, start=1):
+                anime_id = row[0]
+                if anime_id not in rrf_scores:
+                    rrf_scores[anime_id] = 0.0
+                    row_data[anime_id] = dict(zip(col, row))
+                
+                rrf_scores[anime_id] += 1.0 / (k + rank)
+                
+        for anime_id in row_data:
+            row_data[anime_id]['retrieval_rrf_score'] = rrf_scores[anime_id]
+            
+        df = pd.DataFrame(list(row_data.values()), columns=col + ['retrieval_rrf_score'])
+        if not df.empty:
+            df = df.sort_values(by='retrieval_rrf_score', ascending=False).reset_index(drop=True)
+        return df
 
 
     # ----------------------
@@ -87,7 +108,7 @@ class Ranker:
     def _creating_pairs(query : str, retrieved_results: pd.DataFrame) -> List[Tuple]:
         pairs = list(zip(
             itertools.repeat(query),
-            retrieved_results["embedding_text"].tolist()
+            retrieved_results["description"].fillna("").tolist()
             ))
        
         return pairs
@@ -95,7 +116,7 @@ class Ranker:
     def rerank(self, query: str, retrieved_results: pd.DataFrame) -> np.ndarray:
         pairs = self._creating_pairs(query, retrieved_results)
 
-        results = self.cross_encoder.predict(pairs)
+        results = self.cross_encoder.predict(pairs, batch_size=32, show_progress_bar=False)
 
         return results
     
@@ -106,10 +127,33 @@ class Ranker:
 
     def reorder(self, retrieved_results: pd.DataFrame, rerank: np.ndarray) -> pd.DataFrame:
         
+        if retrieved_results.empty:
+            reranked_results = retrieved_results.copy()
+            reranked_results['cross_encoder_score'] = []
+            reranked_results['final_rrf_score'] = []
+            return reranked_results
+
         reranked_results = retrieved_results.copy()
         reranked_results['cross_encoder_score'] = rerank
+        
+        # 1. Get ranks from the initial retrieval (it's already sorted by retrieval_rrf_score, so index+1 is the rank)
+        retrieval_ranks = np.arange(1, len(reranked_results) + 1)
+        
+        # 2. Get ranks from the Cross-Encoder (higher score = better rank)
+        # argsort() twice gives the ranks (0-indexed, ascending), so we invert it for descending ranks
+        ce_ranks = len(rerank) - np.argsort(np.argsort(rerank))
+        
+        # 3. Calculate Final RRF combining Retrieval consensus and Cross-Encoder
+        k = 20
+        final_rrf = (1.0 / (k + retrieval_ranks)) + (1.0 / (k + ce_ranks))
+        
+        # 4. Soft popularity boost
+        pop_boost = np.log1p(reranked_results['popularity'].fillna(0)) / 100.0
+        
+        # Final hybrid score
+        reranked_results['final_rrf_score'] = final_rrf + pop_boost
 
-        return reranked_results.sort_values(by='cross_encoder_score', ascending=False)
+        return reranked_results.sort_values(by='final_rrf_score', ascending=False)
     
 
     # ----------------------
@@ -122,12 +166,12 @@ class Ranker:
         Parse stringified JSON into Python objects.
         Always returns a list (empty if missing or invalid).
         """
-        if pd.isna(x):
-            return []
         if isinstance(x, list):
             return x
         if isinstance(x, dict):
             return [x]
+        if pd.isna(x):
+            return []
         if isinstance(x, str):
             try:
                 parsed = json.loads(x)
@@ -155,58 +199,33 @@ class Ranker:
 
         return ""
     
-
-    def collapse_franchises_old(
-        self,
-        reranked_df,
-        top_k: int = 20,
-        threshold=85
-    ):
-
-        reranked_df["canonical_title"] = reranked_df.apply(self.pick_title, axis=1)
-
-        kept_rows = []
-
-        for _, row in reranked_df.iterrows():
-            current_title = row["canonical_title"]
-
-            is_duplicate = False
-            for kept in kept_rows:
-                kept_title = kept['canonical_title']
-
-                similarity = fuzz.token_set_ratio(
-                    current_title.lower(),
-                    kept_title.lower()
-                )
-
-                if similarity <= threshold:
-                    is_duplicate = True
-                    break
-
-            if not is_duplicate:
-                kept_rows.append(row)
-
-        return pd.DataFrame(kept_rows).head(top_k).reset_index(drop=True)
-
-    
     def json_conversion(self, df: pd.DataFrame) -> json:
         df = df.copy()
         df = df[['id', 'title_romaji','title_userPreferred','title_english', 'coverImage_large', 'cross_encoder_score',
-                  'cosine_similarity']]
+                  'final_rrf_score', 'retrieval_rrf_score']]
         return df.to_dict(orient="records")
     
     # ----------------------
     # PUTTING THEM TOGETHER
     # ----------------------
 
-    def execute(self, user_query, sbert_result, fasttext_result, top_k) -> pd.DataFrame:
-        df = self.merge_deduplicate(sbert_result, fasttext_result)
+    def execute(self, user_query: str, all_results: list, top_k: int) -> list:
+        """
+        Takes the flat pooled results from all retrieval searches, deduplicates,
+        reranks with the cross-encoder against the original user query, collapses
+        franchises, and serialises to JSON.
+        """
+        if not all_results:
+            return []
+
+        df = self.merge_deduplicate(all_results)
         scores = self.rerank(query=user_query, retrieved_results=df)
         df = self.reorder(retrieved_results=df, rerank=scores)
         output = self.collapse_franchises2(reranked_df=df, top_k=top_k)
         final_output = self.json_conversion(output)
 
         return final_output
+
 
 
     @staticmethod

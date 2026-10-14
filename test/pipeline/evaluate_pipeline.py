@@ -1,12 +1,17 @@
 import json
 import sys
+import os
 
 def evaluate(sort_key, desc):
     hit_rates = {1: 0, 5: 0, 10: 0, 20: 0}
     mrr = 0.0
     total = 0
 
-    with open("anime_results.jsonl", "r", encoding="utf-8") as f:
+    data_file = os.path.join(os.path.dirname(__file__), "..", "data", "anime_results.jsonl")
+    if not os.path.exists(data_file):
+        data_file = "anime_results.jsonl"
+
+    with open(data_file, "r", encoding="utf-8") as f:
         for line in f:
             if not line.strip(): continue
             data = json.loads(line)

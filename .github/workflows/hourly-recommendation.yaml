@@ -48,7 +48,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MODAL_ACCESS_TOKEN: ${{ secrets.MODAL_ACCESS_TOKEN }}
-        run: python scripts/hourly_run.py
+        run: python test/hourly_run.py
 
       # -----------------------------------------------------------------------
       # 5. Commit and push updated anime_results.jsonl (if it changed)
@@ -61,11 +61,11 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
 
           # Stage only the results file
-          git add anime_results.jsonl
+          git add test/data/anime_results.jsonl
 
           # Only commit if there are actual changes
           if git diff --cached --quiet; then
-            echo "No changes to anime_results.jsonl — nothing to commit."
+            echo "No changes to test/data/anime_results.jsonl — nothing to commit."
           else
             git commit -m "chore: append hourly anime recommendation result [$(date -u '+%Y-%m-%dT%H:%M:%SZ')]"
             git push

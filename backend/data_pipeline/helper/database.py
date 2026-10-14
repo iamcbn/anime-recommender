@@ -114,6 +114,31 @@ class DatabaseManager:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
 
+    def migrate_schema(self):
+        """
+        Apply non-destructive schema migrations to existing tables.
+
+        Uses ALTER TABLE ... ADD COLUMN IF NOT EXISTS so every statement is:
+        - Safe on fresh DBs (column doesn't exist yet — it's just added)
+        - Safe on existing prod DBs (column already exists — Postgres no-ops it)
+        - Safe to run on every pipeline execution unconditionally
+
+        Add a new ALTER TABLE line here whenever a column is added to DB_QUERIES
+        after the initial deployment.
+        """
+        with self.get_cursor() as cur:
+            # search_vector: full-text search generated column added to anime_content.
+            # Generated columns auto-populate from existing rows — no backfill needed.
+            cur.execute("""
+                ALTER TABLE anime_content
+                ADD COLUMN IF NOT EXISTS search_vector tsvector
+                GENERATED ALWAYS AS (
+                    to_tsvector('english', coalesce(description, ''))
+                ) STORED;
+            """)
+        print("Schema migrations applied successfully.")
+
+
     def create_vector_indexes(self):
         """
         Build HNSW indexes on the anime_embedding table for fast
@@ -131,18 +156,23 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS anime_fasttext_hnsw_idx
                 ON anime_embedding USING hnsw (fasttext_embedding vector_cosine_ops);
             """)
-        print("HNSW vector indexes created successfully.")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_anime_content_search_vector
+                ON anime_content USING GIN (search_vector);
+            """)
+        print("HNSW and GIN vector indexes created successfully.")
 
 
     def drop_vector_indexes(self):
         """
-        Drop HNSW indexes before bulk data promotion so that
-        INSERT ... SELECT doesn't have to update the index row-by-row.
+        Drop all indexes before bulk data promotion so that
+        INSERT ... SELECT doesn't have to update indexes row-by-row.
         """
         with self.get_cursor() as cur:
             cur.execute("DROP INDEX IF EXISTS anime_sbert_hnsw_idx;")
             cur.execute("DROP INDEX IF EXISTS anime_fasttext_hnsw_idx;")
-        print("HNSW vector indexes dropped.")
+            cur.execute("DROP INDEX IF EXISTS idx_anime_content_search_vector;")
+        print("HNSW and GIN vector indexes dropped.")
 
 
     def _adapt_value_old(self, x):
@@ -285,7 +315,11 @@ DB_QUERIES = {
 
         studios JSONB,
 
-        relationship_type TEXT
+        relationship_type TEXT,
+        
+        search_vector tsvector GENERATED ALWAYS AS (
+            to_tsvector('english', coalesce(description, ''))
+        ) STORED
     )""",
     
     "anime_temporal": """

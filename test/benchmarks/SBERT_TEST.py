@@ -249,5 +249,5 @@ if __name__ == "__main__":
     print("\nSUMMARY")
     print(pd.DataFrame(results_table))
     df = pd.DataFrame(results_table)
-    df.to_excel('pipeline/test/sberts_performance.xlsx')
+    df.to_excel(str(Path(__file__).resolve().parent / 'sberts_performance.xlsx'))
 

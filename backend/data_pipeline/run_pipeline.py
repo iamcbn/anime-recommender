@@ -11,12 +11,18 @@ from requests.exceptions import SSLError
 from pathlib import Path
 
 
+import argparse
+
+# ----------------------
+# CLI ARGUMENTS
+# ----------------------
+parser = argparse.ArgumentParser(description="Run the anime data pipeline.")
+parser.add_argument("--force", action="store_true", help="Force rebuild even if Kaggle dataset is up to date.")
+args = parser.parse_args()
 
 start_time = datetime.now()
 start_timet = time.perf_counter()
 KAGGLE_DATASET = "calebmwelsh/anilist-anime-dataset"
-
-
 
 
 # ----------------------
@@ -51,10 +57,18 @@ mgr = KaggleDataVersionManager(
 
 path, created, remote_version = mgr.check_and_prepare(db_kaggle_version=db_kaggle_version, db_state_version=db_state_version)
 
-if not created:
-    print("Dataset already up to date")
+if not created and not args.force:
+    print("Dataset already up to date (use --force to rebuild anyway)")
     print(f'Last run was at {datetime.now()}')
     exit(0)
+
+if not created and args.force:
+    print("Dataset is up to date, but --force was passed. Rebuilding from existing artefact...")
+    # Re-use the existing path since a new one wasn't created
+    if db_state_version is None:
+        path = mgr.version_dir(1)
+    else:
+        path = mgr.version_dir(db_state_version)
 
 
 print(f"New dataset version created at {path}")
@@ -121,8 +135,10 @@ if db_state_version is None:
         
     print("All tables created successfully.")
 
+# Run schema migrations unconditionally — safe on both fresh and existing DBs.
+# This is how new columns added to DB_QUERIES reach production without dropping tables.
+db_manager.migrate_schema()
 
-# Creating temp tables
 for table_name, query in TEMP_QUERIES.items():
     db_manager.create_table(create_query=query)
     print(f"Temp. table t{table_name} created successfully.")

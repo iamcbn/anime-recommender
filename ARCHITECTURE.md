@@ -20,7 +20,7 @@ A deep-dive into the technical design of the Anime Recommender System. For setup
 │    • Parse JSON columns                                 │
 │    • Filter by relationship type                        │
 │    • Build embedding_text (title + synopsis +           │
-│      genres + tags)                                     │
+│      genres + tags + studios + format + year + source)  │
 │    • Split into 5 normalised tables                     │
 │       │                                                 │
 │       ▼                                                 │
@@ -34,32 +34,37 @@ A deep-dive into the technical design of the Anime Recommender System. For setup
 │    • Write to temp tables (staging)                     │
 │    • Drop HNSW indexes                                  │
 │    • Promote temp ──► main tables                       │
-│    • Rebuild HNSW indexes                               │
+│    • Rebuild HNSW & GIN indexes                         │
 │    • Cleanup temp tables                                │
 │    • Record dataset version + kaggle_version in db_state│
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│                RECOMMENDATION PIPELINE                  │
+│           RAG-FUSION RECOMMENDATION PIPELINE            │
 │                   (rag_pipeline.py)                     │
 │                                                         │
 │  User Query                                             │
 │       │                                                 │
 │       ▼                                                 │
-│  Embedder                                               │
-│    • MiniLM embedding (384-dim)                         │
-│    • FastText embedding (300-dim)                       │
+│  1. Query Generator (gpt-5.4-mini Structured Outputs)   │
+│    • Generate 2 hypothetical descriptions (HyDE)        │
+│    • Falls back to the original query on LLM failure    │
 │       │                                                 │
 │       ▼                                                 │
-│  DatabaseManager (connection-pooled)                    │
-│    • pgvector HNSW cosine search (SBERT) ──► top 50     │
-│    • pgvector HNSW cosine search (FastText) ──► top 50  │
-│    • Both searches run concurrently via ThreadPool      │
+│  2. Embedder (3 Queries)                                │
+│    • MiniLM embeddings × 3                              │
+│    • FastText embeddings × 3                            │
 │       │                                                 │
 │       ▼                                                 │
-│  Ranker                                                 │
-│    • Merge & deduplicate by anime ID                    │
-│    • Cross-encoder reranking                            │
+│  3. DatabaseManager (10-thread pool)                    │
+│    • pgvector HNSW search (MiniLM) × 3 queries          │
+│    • pgvector HNSW search (FastText) × 3 queries        │
+│    • BM25 tsvector search (Original + HyDE) × 3 queries │
+│       │                                                 │
+│       ▼                                                 │
+│  4. Ranker (Pool & Deduplicate)                         │
+│    • Merge all 9 lists into one flat bucket             │
+│    • Cross-encoder reranks against ORIGINAL query       │
 │    • Franchise collapse (fuzzy dedup)                   │
 │    • Serialise to JSON                                  │
 │       │                                                 │
@@ -103,17 +108,27 @@ ANIME_RECOMMENDER/
 │   │   ├── helper/
 │   │   │   ├── service_embedding.py      # Embedder (inference version)
 │   │   │   ├── retrieval.py              # DatabaseManager (query version)
+│   │   │   ├── query_generator.py        # HyDE: hypothetical query generation (OpenAI)
+│   │   │   ├── llm_cache.py              # SQLite cache for LLM calls (testing only)
 │   │   │   └── ranking.py               # Ranker: reranking + franchise collapse
 │   │   ├── __init__.py
 │   │   ├── config.py                     # DB config loader (env-var based)
-│   │   ├── main.py                       # FastAPI app entry point
+│   │   ├── main.py                       # FastAPI app entry point (Docker)
 │   │   ├── rag_pipeline.py              # Pipeline orchestrator
 │   │   ├── requirements.txt
 │   │   ├── .dockerignore
 │   │   └── Dockerfile                    # Multi-stage build (CUDA)
+│   ├── main.py                           # FastAPI app entry point (Modal)
 │   └── __init__.py
 ├── docs/
 │   └── DEVELOPER_JOURNAL.md              # Personal dev log, blockers, and changelog
+├── test/                                 # Testing, evaluation & benchmarking (see test/README.md)
+│   ├── pipeline/                         # evaluate_first_stage.py, evaluate_pipeline.py, generate_report.py
+│   ├── experiments/                      # compare_embeddings.py, experiment_k.py
+│   ├── benchmarks/                       # SBERT_TEST.py, sberts_performance.xlsx
+│   ├── data/                             # anime_results.jsonl, evaluation_history.jsonl, report, llm_cache.db
+│   ├── hourly_run.py                     # Synthetic query generator & API test probe
+│   └── run_eval.ps1                      # Runs the local evaluation pipeline
 ├── misc/
 ├── anime/
 ├── .env                                  # Single source of truth for all credentials
@@ -201,6 +216,14 @@ The dataset version (`dataset_version`), the Kaggle remote version timestamp (`k
 
 ## Recommendation Pipeline
 
+### Query Generation (`query_generator.py`)
+
+`QueryGenerator` asks OpenAI (`gpt-5.4-mini`, structured output) for two hypothetical anime descriptions (HyDE) based on the user's query. The original query plus the two generated ones form the 3 queries used downstream. If the LLM call fails, the pipeline degrades gracefully to the original query alone.
+
+**LLM cache (`llm_cache.py`):** HyDE responses can be cached in a local SQLite file (`test/data/llm_cache.db`, override with `LLM_CACHE_PATH`) keyed by `hyde_v1_<query>`. This exists for evaluation: replaying the same test queries costs no OpenAI credits and produces identical HyDE queries every run. Production sets `DISABLE_LLM_CACHE=true`, which makes the cache a no-op. If the cache file cannot be opened, the server starts without caching rather than failing.
+
+**Self-query was removed.** An earlier version extracted metadata filters (genres, year, format) from the query with an LLM and applied them as SQL `WHERE` clauses to all searches. It was removed because the filtering was too aggressive and added API cost and latency. `DatabaseManager` still accepts optional `extra_clauses` / `extra_params`, but the pipeline passes none. The `/recommend` response still includes a `self_query_ms` timing (always `0.0`) so the response shape stays backward compatible.
+
 ### Embedding (`service_embedding.py`)
 
 The query is embedded independently by both models:
@@ -209,7 +232,7 @@ The query is embedded independently by both models:
 
 ### Retrieval (`retrieval.py`)
 
-Two pgvector cosine similarity queries run **concurrently** against `anime_embedding` using `concurrent.futures.ThreadPoolExecutor`, one per model, each returning the top 50 candidates. Both queries are accelerated by HNSW (Hierarchical Navigable Small World) indexes on the `sbert_embedding` and `fasttext_embedding` columns. The `DatabaseManager` uses a `psycopg2.pool.ThreadedConnectionPool` (min 2, max 5 connections) to eliminate per-request TCP connection overhead; each thread leases its own connection from the pool. Adult content is filtered at the database level via the `isAdult` flag in `anime_content`. Dimension validation is enforced before each query (384 for SBERT, 300 for FastText) and raises a `ValueError` before hitting the database if incorrect.
+Two pgvector cosine similarity queries and one BM25 search run **concurrently** for each of the 3 queries (9 concurrent searches total) against `anime_embedding` using `concurrent.futures.ThreadPoolExecutor`, each returning the top 20 candidates. Both semantic models are accelerated by HNSW (Hierarchical Navigable Small World) indexes on the `sbert_embedding` and `fasttext_embedding` columns. The `DatabaseManager` uses a `psycopg2.pool.ThreadedConnectionPool` (min 2, max 10 connections) to eliminate per-request TCP connection overhead; each thread leases its own connection from the pool. Adult content is filtered at the database level via the `isAdult` flag in `anime_content`. Dimension validation is enforced before each query (384 for SBERT, 300 for FastText) and raises a `ValueError` before hitting the database if incorrect.
 
 ### Reranking and Franchise Collapse (`ranking.py`)
 

@@ -51,7 +51,7 @@ class Preprocessor:
 
         # Fix escaped backslashes
         text = text.replace("\\'", "'").replace('\\"', '"')
-        text = re.sub('\""', '"', text)
+        text = re.sub('\"\"', '"', text)
 
 
 
@@ -120,12 +120,14 @@ class Preprocessor:
         Parse stringified JSON into Python objects.
         Always returns a list (empty if missing or invalid).
         """
-        if pd.isna(x):
-            return []
+        import ast
+
         if isinstance(x, list):
             return x
         if isinstance(x, dict):
             return [x]
+        if pd.isna(x):
+            return []
         if isinstance(x, str):
             try:
                 parsed = json.loads(x)
@@ -134,7 +136,15 @@ class Preprocessor:
                 if isinstance(parsed, dict):
                     return [parsed]
             except Exception:
-                return []
+                try:
+                    # Fallback for Python stringified lists (e.g. "['Action', 'Comedy']")
+                    parsed = ast.literal_eval(x)
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return [parsed]
+                except Exception:
+                    return []
         return []
 
 
@@ -166,40 +176,190 @@ class Preprocessor:
     def build_embedding_text(row):
         parts = []
 
+        # Description FIRST — anchors SBERT in semantic/description space.
+        # Putting metadata before the description skews the embedding toward
+        # structured tokens (Format:, Year:, Studios:) and away from the
+        # semantic content that user queries are written against.
+        if isinstance(row.get("description"), str):
+            parts.append(row["description"])
+
+        # Title aliases next — strong signal for exact-match queries
         if row.get("name_text"):
             parts.append(row["name_text"])
 
-        if isinstance(row.get("description"), str):
-            parts.append(row["description"])
+        # Structured metadata
+        if pd.notna(row.get("format")) and str(row.get("format")).strip():
+            parts.append(f"Format: {row['format']}")
+            
+        if pd.notna(row.get("seasonYear")):
+            try:
+                parts.append(f"Year: {int(row['seasonYear'])}")
+            except (ValueError, TypeError):
+                pass
+                
+        if pd.notna(row.get("source")) and str(row.get("source")).strip():
+            parts.append(f"Source: {row['source']}")
+            
+        if pd.notna(row.get("countryOfOrigin")) and str(row.get("countryOfOrigin")).strip():
+            parts.append(f"Country: {row['countryOfOrigin']}")
+            
+        studios = Preprocessor.parse_json(row.get("studios"))
+        if studios:
+            studio_names = []
+            for s in studios:
+                node = s.get("node", {})
+                if node.get("isAnimationStudio") and node.get("name"):
+                    studio_names.append(node["name"])
+            if studio_names:
+                parts.append("Studios: " + ", ".join(studio_names))
 
         if isinstance(row.get("genres"), list) and row["genres"]:
             parts.append("Genres: " + ", ".join(row["genres"]))
 
-        tag_names = Preprocessor.extract_tags(row.get("tags"))
+        # Top tags sorted by AniList rank (most relevant first), capped at 15,
+        # spoiler and adult tags excluded.
+        tag_names = Preprocessor.extract_tags(row.get("tags"), top_n=15)
         if tag_names:
-            parts.append("Tags: " + ", ".join(sorted(tag_names)))
+            parts.append("Tags: " + ", ".join(tag_names))
 
-        return " ".join(parts)
-    
+        # Main characters (MAIN role only, up to 8 names)
+        char_names = Preprocessor.extract_main_characters(row.get("characters"), top_n=8)
+        if char_names:
+            parts.append("Main Characters: " + ", ".join(char_names))
+
+        # Key creative staff: Director, Original Creator, Series Composition
+        staff_entries = Preprocessor.extract_key_staff(row.get("staff"))
+        if staff_entries:
+            parts.append("Staff: " + ", ".join(staff_entries))
+
+        final_text = " ".join(parts)
+        # FastText strictly rejects newlines, so we must purge any that slipped through
+        return final_text.replace("\n", " ").replace("\r", "")
+
+    # ----------------------------
+    # FIELD EXTRACTORS
+    # ----------------------------
+
     @staticmethod
-    def extract_tags(tags):
+    def extract_tags(tags, top_n: int = 15):
         """
-        Safely extract tag names from tags column
+        Extract tag names sorted by AniList rank (descending), capped at top_n.
+        Spoiler and adult tags are included as per user request.
         """
-
         try:
             if isinstance(tags, str):
                 tags = json.loads(tags)
         except Exception:
-            return set()
+            return []
 
-        tag_names = set()
-        for t in tags:
-            tag_name = t.get("name")
-            if tag_name:
-                tag_names.add(tag_name)
+        if not isinstance(tags, list):
+            return []
 
-        return tag_names
+        # Keep all valid dictionary tags
+        filtered = [t for t in tags if isinstance(t, dict)]
+
+        # Sort by rank descending (higher rank = more relevant to this anime)
+        filtered.sort(key=lambda x: x.get("rank", 0), reverse=True)
+
+        return [t["name"] for t in filtered[:top_n] if t.get("name")]
+
+    @staticmethod
+    def extract_main_characters(characters, top_n: int = 8):
+        """
+        Extract the names of MAIN role characters.
+        Handles both flat structures (name at edge level) and nested node
+        structures (name inside node.name.full) as used by the AniList API.
+        """
+        try:
+            if isinstance(characters, str):
+                characters = json.loads(characters)
+        except Exception:
+            return []
+
+        if not isinstance(characters, list):
+            return []
+
+        names = []
+        for char in characters:
+            if not isinstance(char, dict):
+                continue
+            if char.get("role", "").upper() != "MAIN":
+                continue
+
+            full_name = None
+
+            # AniList API v2: name lives in node.name.full
+            node = char.get("node", {})
+            if isinstance(node, dict):
+                name_data = node.get("name", {})
+                if isinstance(name_data, dict):
+                    full_name = name_data.get("full") or name_data.get("native")
+
+            # Fallback: name stored directly at edge level
+            if not full_name:
+                name_data = char.get("name")
+                if isinstance(name_data, dict):
+                    full_name = name_data.get("full") or name_data.get("native")
+                elif isinstance(name_data, str) and name_data.strip():
+                    full_name = name_data.strip()
+
+            if full_name:
+                names.append(full_name)
+
+            if len(names) >= top_n:
+                break
+
+        return names
+
+    @staticmethod
+    def extract_key_staff(staff):
+        """
+        Extract key creative staff — Director, Original Creator, and Series
+        Composition — formatted as "Name (Role)" strings.
+        These roles give the embedding strong signals for creator-based
+        queries (e.g. "anime directed by Satoshi Kon").
+        """
+        # Exact role matches only — "Animation Director", "Action Director" etc.
+        # are too granular and add noise rather than search signal.
+        KEY_ROLES = {"director", "original creator", "series composition"}
+
+        try:
+            if isinstance(staff, str):
+                staff = json.loads(staff)
+        except Exception:
+            return []
+
+        if not isinstance(staff, list):
+            return []
+
+        results = []
+        seen_names = set()
+
+        for member in staff:
+            if not isinstance(member, dict):
+                continue
+
+            role = member.get("role", "")
+            if not any(k in role.lower() for k in KEY_ROLES):
+                continue
+
+            # Staff name lives inside node.name.full
+            node = member.get("node", {})
+            if not isinstance(node, dict):
+                continue
+
+            name_data = node.get("name", {})
+            full_name = None
+            if isinstance(name_data, dict):
+                full_name = name_data.get("full") or name_data.get("native")
+            elif isinstance(name_data, str) and name_data.strip():
+                full_name = name_data.strip()
+
+            if full_name and full_name not in seen_names:
+                seen_names.add(full_name)
+                results.append(f"{full_name} ({role})")
+
+        return results
 
     # ----------------------------
     # MAIN PREPROCESSING
@@ -217,10 +377,13 @@ class Preprocessor:
         # Filter out music
         df = df[df["format"] != "MUSIC"].reset_index(drop=True)
 
-        # Parse JSON / list-like columns
+        # Parse JSON / list-like columns.
+        # characters and staff are now included so build_embedding_text
+        # can extract character names and key staff roles.
         parse_cols = [
             "synonyms", "genres", "rankings",
-            "tags", "studios", "recommendations"
+            "tags", "studios", "recommendations",
+            "characters", "staff",
         ]
 
         for col in parse_cols:

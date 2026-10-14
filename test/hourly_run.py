@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 MODAL_API_URL = "https://iamcbn--anime-recommender-api-fastapi-app.modal.run/recommend"
-RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "anime_results.jsonl")
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "data", "anime_results.jsonl")
 
 GEMINI_MODEL = "gemini-3.6-flash"
 

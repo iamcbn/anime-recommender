@@ -10,6 +10,7 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY} 
     ports:
       - "${DB_PORT}:5432"
     volumes:
@@ -39,6 +40,7 @@ services:
       KAGGLE_USERNAME: ${KAGGLE_USERNAME}
       KAGGLE_KEY: ${KAGGLE_KEY}
       HF_TOKEN: ${HF_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY} 
     volumes:
       - models:/app/models
       - artefacts:/app/data_pipeline/artefacts
@@ -66,6 +68,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       MY_API_KEY: ${MY_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY} 
     ports:
       - "8000:8000"
     volumes:
@@ -76,7 +79,7 @@ services:
   rag_pipeline_gpu:
     build:
       context: .
-      dockerfile: backend/rag_pipeline/Dockerfile
+      dockerfile: backend/rag_pipeline/Dockerfile.gpu
     depends_on:
       db:
         condition: service_healthy
@@ -89,6 +92,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       MY_API_KEY: ${MY_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY} 
     ports:
       - "8001:8000"
     volumes:

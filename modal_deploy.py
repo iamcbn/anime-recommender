@@ -13,7 +13,17 @@ image = (
     .run_commands(
         "pip install -r /requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118"
     )
-    .add_local_dir("./backend", remote_path="/root/backend")
+    .add_local_dir(
+        "./backend",
+        remote_path="/root/backend",
+        ignore=[
+            "models",
+            "models/**",
+            "**/__pycache__/**",
+            "__pycache__",
+            "data_pipeline/artefacts/**",
+        ],
+    )
 )
 
 volume = modal.Volume.from_name("anime-models-vol", create_if_missing=True)

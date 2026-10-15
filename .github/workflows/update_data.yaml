@@ -7,6 +7,11 @@ on:
   
   # Allow manual trigger from the GitHub Actions tab
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild even if Kaggle dataset is up to date'
+        type: boolean
+        default: true
 
 jobs:
   update-database:
@@ -27,6 +32,12 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/artefacts
           mkdir -p ${{ github.workspace }}/models
+
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
           docker run --rm \
             -e DB_HOST=${{ secrets.DB_HOST }} \
             -e DB_PORT=${{ secrets.DB_PORT }} \
@@ -38,7 +49,7 @@ jobs:
             -e HF_TOKEN=${{ secrets.HF_TOKEN }} \
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
             -v ${{ github.workspace }}/models:/app/models \
-            anime-data-pipeline
+            anime-data-pipeline python -m data_pipeline.run_pipeline $FORCE_FLAG
 
       - name: Fix File Permissions
         run: |
@@ -48,6 +59,11 @@ jobs:
 
       - name: Upload Models to Modal
         run: |
+          if [ -z "$(ls -A ${{ github.workspace }}/models)" ]; then
+            echo "No new models generated; skipping upload to Modal."
+            exit 0
+          fi
+
           pip install modal
           modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
           

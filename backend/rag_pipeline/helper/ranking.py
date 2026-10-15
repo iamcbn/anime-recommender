@@ -2,7 +2,7 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import CrossEncoder
 import pandas as pd, numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Set, Any, Dict
 import torch
 import logging
 import re
@@ -70,33 +70,75 @@ class Ranker:
     # Merging and deduplicating
     # -------------------------
 
-    def merge_deduplicate(self, all_results: list) -> pd.DataFrame:
+    def merge_deduplicate(
+        self,
+        all_results: list,
+        seen_ids: Optional[set[int]] = None
+    ) -> pd.DataFrame:
         """
         Takes a list of ranked lists from different searches (MiniLM, FastText, BM25),
-        calculates the RRF (Reciprocal Rank Fusion) score across them, and deduplicates.
+        filters seen_ids in memory using O(1) set subtraction, calculates RRF scores
+        across them, and deduplicates.
         """
-        col = ['id', 'title_romaji', 'title_english', 'coverImage_large', 'isAdult',
-               'embedding_text', 'title_userPreferred', 'synonyms', 'description', 'popularity', 'cosine_similarity']
-        
+        seen_set = set(seen_ids) if seen_ids else set()
+
+        col = [
+            'id', 'title_romaji', 'title_english', 'coverImage_large', 'isAdult',
+            'embedding_text', 'title_userPreferred', 'synonyms', 'description',
+            'genres', 'studios', 'tags', 'averageScore', 'seasonYear', 'episodes',
+            'status', 'popularity', 'cosine_similarity'
+        ]
+
         rrf_scores = {}
         row_data = {}
         k = 20
-        
+
         for ranked_list in all_results:
             for rank, row in enumerate(ranked_list, start=1):
-                anime_id = row[0]
+                # Handle DictRow, dict, or tuple/list safely
+                if hasattr(row, "keys"):
+                    anime_id = row["id"]
+                else:
+                    anime_id = row[0]
+
+                # O(1) in-memory hash set subtraction: skip seen/dropped anime
+                if anime_id in seen_set:
+                    continue
+
                 if anime_id not in rrf_scores:
                     rrf_scores[anime_id] = 0.0
-                    row_data[anime_id] = dict(zip(col, row))
-                
+                    if hasattr(row, "keys"):
+                        row_dict = {c: row[c] for c in col if c in row}
+                    elif len(row) == len(col):
+                        row_dict = dict(zip(col, row))
+                    elif len(row) == 11:
+                        # Defensive handling for legacy 11-column tuples
+                        legacy_cols = [
+                            'id', 'title_romaji', 'title_english', 'coverImage_large', 'isAdult',
+                            'embedding_text', 'title_userPreferred', 'synonyms', 'description',
+                            'popularity', 'cosine_similarity'
+                        ]
+                        row_dict = dict(zip(legacy_cols, row))
+                    else:
+                        row_dict = dict(zip(col[:len(row)], row))
+
+                    row_data[anime_id] = row_dict
+
                 rrf_scores[anime_id] += 1.0 / (k + rank)
-                
+
+        if not row_data:
+            return pd.DataFrame(columns=col + ['retrieval_rrf_score'])
+
         for anime_id in row_data:
             row_data[anime_id]['retrieval_rrf_score'] = rrf_scores[anime_id]
-            
-        df = pd.DataFrame(list(row_data.values()), columns=col + ['retrieval_rrf_score'])
-        if not df.empty:
-            df = df.sort_values(by='retrieval_rrf_score', ascending=False).reset_index(drop=True)
+
+        df = pd.DataFrame(list(row_data.values()))
+        for c in col:
+            if c not in df.columns:
+                df[c] = None
+
+        df = df[col + ['retrieval_rrf_score']]
+        df = df.sort_values(by='retrieval_rrf_score', ascending=False).reset_index(drop=True)
         return df
 
 
@@ -199,30 +241,60 @@ class Ranker:
 
         return ""
     
-    def json_conversion(self, df: pd.DataFrame) -> json:
+    def json_conversion(self, df: pd.DataFrame, include_metadata: bool = True) -> list:
+        if df.empty:
+            return []
+
         df = df.copy()
-        df = df[['id', 'title_romaji','title_userPreferred','title_english', 'coverImage_large', 'cross_encoder_score',
-                  'final_rrf_score', 'retrieval_rrf_score']]
-        return df.to_dict(orient="records")
-    
+        base_cols = [
+            'id', 'title_romaji', 'title_userPreferred', 'title_english',
+            'coverImage_large', 'cross_encoder_score', 'final_rrf_score', 'retrieval_rrf_score'
+        ]
+
+        if include_metadata:
+            meta_cols = [
+                'description', 'genres', 'studios', 'tags',
+                'averageScore', 'seasonYear', 'episodes', 'status'
+            ]
+            for col_name in meta_cols:
+                if col_name in df.columns:
+                    base_cols.append(col_name)
+
+        target_cols = [c for c in base_cols if c in df.columns]
+        df = df[target_cols]
+
+        # Convert NaNs to None for valid JSON serialization
+        records = df.where(pd.notnull(df), None).to_dict(orient="records")
+        return records
+
     # ----------------------
     # PUTTING THEM TOGETHER
     # ----------------------
 
-    def execute(self, user_query: str, all_results: list, top_k: int) -> list:
+    def execute(
+        self,
+        user_query: str,
+        all_results: list,
+        top_k: int,
+        seen_ids: Optional[set[int]] = None,
+        include_metadata: bool = True
+    ) -> list:
         """
         Takes the flat pooled results from all retrieval searches, deduplicates,
-        reranks with the cross-encoder against the original user query, collapses
-        franchises, and serialises to JSON.
+        filters seen_ids in memory, reranks with the cross-encoder against the
+        original user query, collapses franchises, and serialises to JSON.
         """
         if not all_results:
             return []
 
-        df = self.merge_deduplicate(all_results)
+        df = self.merge_deduplicate(all_results, seen_ids=seen_ids)
+        if df.empty:
+            return []
+
         scores = self.rerank(query=user_query, retrieved_results=df)
         df = self.reorder(retrieved_results=df, rerank=scores)
         output = self.collapse_franchises2(reranked_df=df, top_k=top_k)
-        final_output = self.json_conversion(output)
+        final_output = self.json_conversion(output, include_metadata=include_metadata)
 
         return final_output
 

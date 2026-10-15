@@ -1,8 +1,9 @@
 from psycopg2 import connect, extras
-from psycopg2.pool import ThreadedConnectionPool
+from psycopg2.pool import ThreadedConnectionPool, PoolError
 from typing import List, Tuple, Optional
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+import time
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,7 +13,8 @@ class DatabaseManager:
 
     def __init__(self, PARAMS: dict, min_conn: int = 2, max_conn: int = 10):
         self.PARAMS = PARAMS
-        # Increased max_conn from 5 to 10 to handle up to 7 concurrent searches
+        self.min_conn = min_conn
+        self.max_conn = max_conn
         self._pool = ThreadedConnectionPool(
             minconn=min_conn,
             maxconn=max_conn,
@@ -20,20 +22,50 @@ class DatabaseManager:
             cursor_factory=extras.DictCursor
         )
 
-
     # ----------------------
     # CONNECTION HANDLERS
     # ----------------------
 
     @contextmanager
-    def get_cursor(self):
-        conn = self._pool.getconn()
+    def get_cursor(self, timeout: float = 5.0):
+        """
+        Thread-safe context manager for acquiring a cursor from the connection pool.
+
+        Features:
+        - Graceful retry loop up to `timeout` seconds to absorb momentary connection spikes
+          without throwing unhandled psycopg2.pool.PoolError.
+        - Automatically tests connection vitality and purges closed/broken connections from the pool.
+        """
+        start_time = time.monotonic()
+        conn = None
+
+        while conn is None:
+            try:
+                conn = self._pool.getconn()
+            except PoolError:
+                elapsed = time.monotonic() - start_time
+                if elapsed >= timeout:
+                    logger.error(
+                        f"Database connection pool checkout timed out after {timeout:.1f}s. "
+                        f"Pool capacity: min={self.min_conn}, max={self.max_conn}."
+                    )
+                    raise TimeoutError(
+                        f"Database connection pool checkout timed out after {timeout:.1f}s. "
+                        "All connections are currently in use."
+                    )
+                time.sleep(0.025)  # 25ms polling backoff
+
         try:
             with conn:
                 with conn.cursor() as cur:
                     yield cur
+        except Exception:
+            raise
         finally:
-            self._pool.putconn(conn)
+            if conn is not None:
+                # Discard broken or closed connections so the pool can recreate a healthy one
+                is_closed = getattr(conn, "closed", 0) != 0
+                self._pool.putconn(conn, close=is_closed)
 
     # ----------------------
     # DB MIGRATION
@@ -43,10 +75,9 @@ class DatabaseManager:
         """
         One-time migration: adds a tsvector column to anime_content and builds
         a GIN index on it for BM25 full-text search.
-        Safe to call on every startup — uses IF NOT EXISTS guards.
+        Safe to call on startup or via migration scripts — uses IF NOT EXISTS guards.
         """
         with self.get_cursor() as cur:
-            # Add the column if it doesn't already exist
             cur.execute("""
                 ALTER TABLE anime_content
                 ADD COLUMN IF NOT EXISTS search_vector tsvector
@@ -54,7 +85,6 @@ class DatabaseManager:
                     to_tsvector('english', coalesce(description, ''))
                 ) STORED;
             """)
-            # Create GIN index if it doesn't already exist
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_anime_content_search_vector
                 ON anime_content USING GIN (search_vector);
@@ -76,15 +106,14 @@ class DatabaseManager:
             ):
         """
         Runs a pgvector cosine similarity search for a single embedding.
+        Projects enriched metadata for grounded LLM recommendation synthesis.
 
         Args:
             query_embedding: The dense vector to search with.
             model: 'sbert' (384-dim) or 'fasttext' (300-dim).
             top_k: Number of results to return.
             allow_adult: Whether to include adult content.
-            extra_clauses: Optional list of SQL WHERE clause fragments (currently
-                           unused; the pipeline passes none). These join
-                           the existing anime_temporal and anime_metrics tables.
+            extra_clauses: Optional list of SQL WHERE clause fragments.
             extra_params: Corresponding parameter values for extra_clauses.
         """
         query_vector = str(query_embedding)
@@ -104,17 +133,8 @@ class DatabaseManager:
 
         internal_limit = max(top_k * 5, 200)
 
-        # Build optional self-query filter block
         extra_clauses = extra_clauses or []
         extra_params = extra_params or []
-
-        needs_temporal = any("temporal." in c for c in extra_clauses)
-        # metrics is always joined unconditionally now to fetch popularity for the reranker
-        temporal_join = (
-            'JOIN anime_temporal AS temporal ON core.id = temporal.id'
-            if needs_temporal else ''
-        )
-        metrics_join = 'JOIN anime_metrics AS metrics ON core.id = metrics.id'
 
         extra_where = ""
         if extra_clauses:
@@ -141,12 +161,19 @@ class DatabaseManager:
                 core.synonyms,
                 content.description,
                 metrics.popularity,
-                1 - embed.distance AS cosine_similarity
+                1 - embed.distance AS cosine_similarity,
+                content.genres,
+                content.studios,
+                content.tags,
+                metrics.averageScore AS "averageScore",
+                temporal.seasonYear AS "seasonYear",
+                temporal.episodes AS "episodes",
+                temporal.status AS "status"
             FROM top_embeddings AS embed
             JOIN anime_core AS core ON core.id = embed.id
             JOIN anime_content AS content ON core.id = content.id
-            {temporal_join}
-            {metrics_join}
+            JOIN anime_metrics AS metrics ON core.id = metrics.id
+            LEFT JOIN anime_temporal AS temporal ON core.id = temporal.id
             WHERE (%s OR content.isAdult = FALSE)
             {extra_where}
             ORDER BY embed.distance
@@ -171,18 +198,10 @@ class DatabaseManager:
             ):
         """
         Runs a Postgres full-text (BM25-equivalent) search using tsvector/tsquery.
+        Projects enriched metadata for grounded LLM recommendation synthesis.
         """
         extra_clauses = extra_clauses or []
         extra_params = extra_params or []
-
-        needs_temporal = any("temporal." in c for c in extra_clauses)
-        # metrics is always joined unconditionally now to fetch popularity for the reranker
-
-        temporal_join = (
-            'JOIN anime_temporal AS temporal ON core.id = temporal.id'
-            if needs_temporal else ''
-        )
-        metrics_join = 'JOIN anime_metrics AS metrics ON core.id = metrics.id'
 
         extra_where = ""
         if extra_clauses:
@@ -200,12 +219,19 @@ class DatabaseManager:
                 core.synonyms,
                 content.description,
                 metrics.popularity,
-                ts_rank(content.search_vector, websearch_to_tsquery('english', replace(%s, ' ', ' OR '))) AS cosine_similarity
+                ts_rank(content.search_vector, websearch_to_tsquery('english', replace(%s, ' ', ' OR '))) AS cosine_similarity,
+                content.genres,
+                content.studios,
+                content.tags,
+                metrics.averageScore AS "averageScore",
+                temporal.seasonYear AS "seasonYear",
+                temporal.episodes AS "episodes",
+                temporal.status AS "status"
             FROM anime_content AS content
             JOIN anime_core AS core ON core.id = content.id
             JOIN anime_embedding AS embed ON core.id = embed.id
-            {temporal_join}
-            {metrics_join}
+            JOIN anime_metrics AS metrics ON core.id = metrics.id
+            LEFT JOIN anime_temporal AS temporal ON core.id = temporal.id
             WHERE content.search_vector @@ websearch_to_tsquery('english', replace(%s, ' ', ' OR '))
             AND (%s OR content.isAdult = FALSE)
             {extra_where}
@@ -213,7 +239,6 @@ class DatabaseManager:
             LIMIT %s;
         """
 
-        # We pass query_text directly; the SQL `replace()` turns it into "word1 OR word2"
         params = [query_text, query_text, allow_adult] + extra_params + [top_k]
 
         with self.get_cursor() as cur:
@@ -234,20 +259,25 @@ class DatabaseManager:
             allow_adult: bool = False,
             extra_clauses: Optional[List[str]] = None,
             extra_params: Optional[List] = None,
+            max_workers: int = 3,
             ) -> List:
         """
         Runs all retrieval searches concurrently across all queries.
 
         Strategy:
           - MiniLM search + FastText search + BM25 search run for ALL queries (original + LLM-generated)
+          - Concurrency is bounded to `max_workers=3` to ensure a single RAG request consumes
+            at most 3 pool connections simultaneously, leaving sufficient capacity for concurrent
+            requests and preventing connection exhaustion under multi-user traffic.
 
         Args:
             queries: List of query strings [original, query_b, query_c].
             embeddings: Parallel list of (sbert_emb, fasttext_emb) tuples from Embedder.
             top_k: Candidates to fetch per individual search.
             allow_adult: Whether to include adult content.
-            extra_clauses: Optional SQL WHERE fragments applied to all searches (currently unused).
+            extra_clauses: Optional SQL WHERE fragments applied to all searches.
             extra_params: Corresponding parameter values for extra_clauses.
+            max_workers: Concurrency ceiling for thread execution (default: 3).
 
         Returns:
             A flat list of all result rows from all searches, ready for
@@ -258,9 +288,8 @@ class DatabaseManager:
 
         futures = []
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for i, (query_text, (sbert_emb, fasttext_emb)) in enumerate(zip(queries, embeddings)):
-                # MiniLM and FastText run for ALL queries
                 futures.append(executor.submit(
                     self.semantic_search,
                     sbert_emb, 'sbert', top_k, allow_adult, extra_clauses, extra_params
@@ -269,8 +298,6 @@ class DatabaseManager:
                     self.semantic_search,
                     fasttext_emb, 'fasttext', top_k, allow_adult, extra_clauses, extra_params
                 ))
-                # BM25 now runs for ALL queries (original + HyDE hypotheticals)
-                # This drastically improves recall by matching keywords from the LLM-generated synopsis
                 futures.append(executor.submit(
                     self.bm25_search,
                     query_text, top_k, allow_adult, extra_clauses, extra_params
@@ -278,17 +305,14 @@ class DatabaseManager:
 
             all_results = []
             for f in futures:
-                all_results.append(f.result())
+                try:
+                    all_results.append(f.result())
+                except Exception as e:
+                    logger.warning(f"Retrieval sub-query failed: {e}", exc_info=True)
+                    all_results.append([])
 
         return all_results
-
 
     def close(self):
         """Close all connections in the pool."""
         self._pool.closeall()
-
-
-
-
-
-

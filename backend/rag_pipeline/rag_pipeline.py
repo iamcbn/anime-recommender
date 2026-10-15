@@ -3,7 +3,7 @@ from .helper.retrieval import DatabaseManager
 from .helper.ranking import Ranker
 from .helper.query_generator import QueryGenerator
 from .config import config
-from typing import Text
+from typing import Text, Optional, Set
 import time
 import logging
 
@@ -21,9 +21,8 @@ retriever = DatabaseManager(PARAMS=PARAMS)
 reranker = Ranker()
 query_generator = QueryGenerator()
 
-# Run the one-time BM25 migration on startup.
-# IF NOT EXISTS guards make this a safe no-op on subsequent calls.
-retriever.ensure_bm25_index()
+# Note: BM25 tsvector and GIN index migrations are decoupled from startup
+# and managed independently via backend/migrations/001_bm25_index_and_metadata.py.
 
 
 # ----------------------
@@ -42,7 +41,13 @@ class Timer:
 # RAG PIPELINE
 # ----------------------
 
-def rag_pipeline(query: Text, top_k: int, allow_adult: bool = False):
+def rag_pipeline(
+    query: Text,
+    top_k: int,
+    allow_adult: bool = False,
+    seen_ids: Optional[set[int]] = None,
+    include_metadata: bool = True
+):
     """
     Full Iteration 2 RAG-Fusion pipeline.
 
@@ -50,8 +55,8 @@ def rag_pipeline(query: Text, top_k: int, allow_adult: bool = False):
         1. Generation  — generate 2 hypothetical queries via gpt-5.4-mini (HyDE)
         2. Embedding   — embed all 3 queries with MiniLM + FastText
         3. Retrieval   — 9 concurrent searches (MiniLM×3, FastText×3, BM25×3)
-        4. Reranking   — pool, dedup, cross-encoder score against original query
-        5. Response    — franchise collapse + JSON serialisation
+        4. Reranking   — pool, in-memory seen filtering, cross-encoder score against original query
+        5. Response    — franchise collapse + JSON serialisation (preserving enriched metadata)
     """
     timings = {}
 
@@ -101,7 +106,7 @@ def rag_pipeline(query: Text, top_k: int, allow_adult: bool = False):
 
     # ----------------------
     # STEP 5 & 6: RERANKING + RESPONSE
-    # Dedup, cross-encoder score against original query, franchise collapse.
+    # Dedup, in-memory seen filtering, cross-encoder score against original query, franchise collapse.
     # ----------------------
 
     t = Timer()
@@ -109,6 +114,8 @@ def rag_pipeline(query: Text, top_k: int, allow_adult: bool = False):
         user_query=query,
         all_results=all_results,
         top_k=top_k,
+        seen_ids=seen_ids,
+        include_metadata=include_metadata,
     )
     timings['reranking_ms'] = t.elapsed()
 

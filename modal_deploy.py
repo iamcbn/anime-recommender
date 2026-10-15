@@ -31,7 +31,10 @@ volume = modal.Volume.from_name("anime-models-vol", create_if_missing=True)
 # Expose the FastAPI app via a Serverless ASGI endpoint
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("anime-secret")], # Inject secrets from Modal Secret Store
+    secrets=[
+        modal.Secret.from_name("anime-secret"),
+        modal.Secret.from_name("openai-secret")
+    ],
     gpu="T4",     # Use a T4 GPU for inference
     # 10 minutes timeout
     timeout=600,

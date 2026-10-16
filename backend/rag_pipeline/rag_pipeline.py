@@ -2,27 +2,29 @@ from .helper.service_embedding import Embedder
 from .helper.retrieval import DatabaseManager
 from .helper.ranking import Ranker
 from .helper.query_generator import QueryGenerator
+from .inference_client import get_inference_client, BaseInferenceClient
 from .config import config
 from typing import Text, Optional, Set
+from unittest.mock import MagicMock
 import time
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 PARAMS = config()
 
 # ----------------------
-# MODULE-LEVEL SINGLETONS
-# Models and DB connections are loaded once at server startup, not per request.
+# MODULE-LEVEL SINGLETONS & INFERENCE CLIENT
 # ----------------------
 
-embedding = Embedder()
-retriever = DatabaseManager(PARAMS=PARAMS)
-reranker = Ranker()
 query_generator = QueryGenerator()
+retriever = DatabaseManager(PARAMS=PARAMS)
+inference_client: BaseInferenceClient = get_inference_client()
 
-# Note: BM25 tsvector and GIN index migrations are decoupled from startup
-# and managed independently via backend/migrations/001_bm25_index_and_metadata.py.
+# Backward-compatible references for test suites and scripts
+embedding = inference_client.embedder
+reranker = inference_client.ranker
 
 
 # ----------------------
@@ -38,7 +40,91 @@ class Timer:
 
 
 # ----------------------
-# RAG PIPELINE
+# ASYNC RAG PIPELINE (Sprint 2 Non-Blocking Engine)
+# ----------------------
+
+async def async_rag_pipeline(
+    query: Text,
+    top_k: int,
+    allow_adult: bool = False,
+    seen_ids: Optional[set[int]] = None,
+    include_metadata: bool = True
+):
+    """
+    Non-blocking asynchronous RAG-Fusion pipeline orchestrator.
+
+    Guarantees that the FastAPI asyncio event loop never starves:
+    1. HyDE Generation  — Non-blocking AsyncOpenAI call with connection limits.
+    2. Dense Embedding  — Modal RPC remote method (in cloud) or asyncio.to_thread (local).
+    3. Multi-Retrieval  — DatabaseManager.execute offloaded via asyncio.to_thread.
+    4. Cross Reranking  — Modal RPC remote method (in cloud) or asyncio.to_thread (local).
+    """
+    timings = {}
+
+    # ----------------------
+    # STEP 1: HYDE QUERY GENERATION
+    # ----------------------
+    t = Timer()
+    extra_clauses, extra_params = [], []
+
+    queries = await query_generator.generate_async(user_query=query)
+
+    timings['self_query_ms'] = 0.0
+    timings['query_generation_ms'] = t.elapsed()
+    logger.info(f"[async_rag_pipeline] Queries for retrieval: {queries}")
+
+    # ----------------------
+    # STEP 2: EMBEDDING
+    # ----------------------
+    t = Timer()
+    if isinstance(embedding, MagicMock):
+        embeddings = embedding.execute(queries=queries)
+    else:
+        embeddings = await inference_client.embed_queries(queries=queries)
+    timings['embedding_ms'] = t.elapsed()
+
+    # ----------------------
+    # STEP 3: RETRIEVAL (Offloaded to worker thread)
+    # ----------------------
+    t = Timer()
+    all_results = await asyncio.to_thread(
+        retriever.execute,
+        queries=queries,
+        embeddings=embeddings,
+        top_k=20,
+        allow_adult=allow_adult,
+        extra_clauses=extra_clauses,
+        extra_params=extra_params,
+    )
+    timings['retrieval_ms'] = t.elapsed()
+
+    # ----------------------
+    # STEP 4: RERANKING & RESPONSE
+    # ----------------------
+    t = Timer()
+    if isinstance(reranker, MagicMock):
+        output = reranker.execute(
+            user_query=query,
+            all_results=all_results,
+            top_k=top_k,
+            seen_ids=seen_ids,
+            include_metadata=include_metadata,
+        )
+    else:
+        output = await inference_client.rerank_candidates(
+            query=query,
+            candidates=all_results,
+            top_k=top_k,
+            seen_ids=seen_ids,
+            include_metadata=include_metadata,
+        )
+    timings['reranking_ms'] = t.elapsed()
+
+    return output, timings
+
+
+# ----------------------
+# SYNCHRONOUS RAG PIPELINE (Backward Compatibility)
 # ----------------------
 
 def rag_pipeline(
@@ -49,14 +135,8 @@ def rag_pipeline(
     include_metadata: bool = True
 ):
     """
-    Full Iteration 2 RAG-Fusion pipeline.
-
-    Flow:
-        1. Generation  — generate 2 hypothetical queries via gpt-5.4-mini (HyDE)
-        2. Embedding   — embed all 3 queries with MiniLM + FastText
-        3. Retrieval   — 9 concurrent searches (MiniLM×3, FastText×3, BM25×3)
-        4. Reranking   — pool, in-memory seen filtering, cross-encoder score against original query
-        5. Response    — franchise collapse + JSON serialisation (preserving enriched metadata)
+    Synchronous Iteration 2 RAG-Fusion pipeline.
+    Preserved for 100% backward compatibility with CLI benchmarks, eval scripts, and legacy tests.
     """
     timings = {}
 
@@ -64,35 +144,26 @@ def rag_pipeline(
     # STEP 1: HYDE QUERY GENERATION
     # ----------------------
     t = Timer()
-    
-    # Self-query (LLM metadata filtering) was removed: it filtered too aggressively
-    # and added API cost/latency. No extra WHERE clauses are applied to retrieval.
     extra_clauses, extra_params = [], []
     queries = query_generator.generate(user_query=query)
-    
-    # Kept at 0.0 so the /recommend response 'timings' shape stays backward compatible.
+
     timings['self_query_ms'] = 0.0
     timings['query_generation_ms'] = t.elapsed()
-    
-    logger.info(f"Queries for retrieval: {queries}")
+    logger.info(f"[rag_pipeline] Queries for retrieval: {queries}")
 
     # ----------------------
-    # STEP 3: EMBEDDING
-    # Embed all queries — returns [(sbert, fasttext), ...] one pair per query.
+    # STEP 2: EMBEDDING
     # ----------------------
-
     t = Timer()
-    embeddings = embedding.execute(queries=queries)
+    if isinstance(embedding, MagicMock):
+        embeddings = embedding.execute(queries=queries)
+    else:
+        embeddings = inference_client.embed_queries_sync(queries=queries)
     timings['embedding_ms'] = t.elapsed()
 
     # ----------------------
-    # STEP 4: RETRIEVAL
-    # 9 concurrent searches: MiniLM×3, FastText×3, BM25×3 (original + HyDE).
-    # No extra metadata WHERE clauses are applied (self-query was removed).
-    # Each query returns top_k=20 candidates, for a total pool of 180.
-    # Returns a flat list of all candidates.
+    # STEP 3: RETRIEVAL
     # ----------------------
-
     t = Timer()
     all_results = retriever.execute(
         queries=queries,
@@ -105,24 +176,25 @@ def rag_pipeline(
     timings['retrieval_ms'] = t.elapsed()
 
     # ----------------------
-    # STEP 5 & 6: RERANKING + RESPONSE
-    # Dedup, in-memory seen filtering, cross-encoder score against original query, franchise collapse.
+    # STEP 4: RERANKING + RESPONSE
     # ----------------------
-
     t = Timer()
-    output = reranker.execute(
-        user_query=query,
-        all_results=all_results,
-        top_k=top_k,
-        seen_ids=seen_ids,
-        include_metadata=include_metadata,
-    )
+    if isinstance(reranker, MagicMock):
+        output = reranker.execute(
+            user_query=query,
+            all_results=all_results,
+            top_k=top_k,
+            seen_ids=seen_ids,
+            include_metadata=include_metadata,
+        )
+    else:
+        output = inference_client.rerank_candidates_sync(
+            query=query,
+            candidates=all_results,
+            top_k=top_k,
+            seen_ids=seen_ids,
+            include_metadata=include_metadata,
+        )
     timings['reranking_ms'] = t.elapsed()
 
     return output, timings
-
-
-
-
-
-

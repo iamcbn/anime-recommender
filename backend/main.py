@@ -1,4 +1,5 @@
 import os
+import uuid
 from typing import Annotated, Optional
 from collections import defaultdict
 from datetime import timedelta, datetime
@@ -11,6 +12,12 @@ from pydantic import BaseModel, Field
 from backend.rag_pipeline.rag_pipeline import rag_pipeline, async_rag_pipeline
 from backend.rag_pipeline.orchestrator import orchestrator
 from backend.rag_pipeline.helper.guardrails import DomainGuardrails
+from backend.rag_pipeline.helper.rate_limiter import (
+    DistributedRateLimiter,
+    RateLimiter,
+    rate_limiter,
+)
+from backend.rag_pipeline.helper.state_manager import state_manager
 
 
 app = FastAPI(title="Anime Recommendation API")
@@ -20,42 +27,13 @@ api_key_header = APIKeyHeader(name="access_token", auto_error=False)
 
 
 # ----------------------
-# RATE LIMITING
+# API KEY SECURITY & RATE LIMITING
 # ----------------------
 
-class RateLimiter:
-    def __init__(self, requests_num: int = 20, period: timedelta = timedelta(minutes=1)):
-        self.requests_per_min = requests_num
-        self.period = period
-        self.requests = defaultdict(list)
-
-    def is_rate_limited(self, api_key: str) -> tuple[bool, int]:
-        now = datetime.now()
-        start_time = now - self.period
-        start_ts = start_time.timestamp()
-
-        valid_requests = []
-        for req in self.requests[api_key]:
-            req_ts = req.timestamp() if isinstance(req, datetime) else float(req)
-            if req_ts > start_ts:
-                valid_requests.append(req)
-        self.requests[api_key] = valid_requests
-
-        recent_requests = len(self.requests[api_key])
-        if recent_requests >= self.requests_per_min:
-            return True, 0
-        else:
-            self.requests[api_key].append(now)
-            return False, self.requests_per_min - recent_requests - 1
-
-
-# ----------------------
-# API KEY SECURITY
-# ----------------------
-rate_limiter = RateLimiter()
-
-
-async def get_api_key(api_key: str = Security(api_key_header)):
+async def get_api_key(
+    request: Request,
+    api_key: str = Security(api_key_header)
+):
     expected_key = os.getenv("MY_API_KEY", API_KEY)
     if not expected_key or api_key != expected_key:
         raise HTTPException(
@@ -63,11 +41,24 @@ async def get_api_key(api_key: str = Security(api_key_header)):
             detail="Invalid or missing API key"
         )
 
-    is_limited, _ = rate_limiter.is_rate_limited(api_key)
+    # Rate check supporting distributed Redis, in-memory fallback, and test mock patching
+    rate_res = rate_limiter.is_rate_limited(api_key)
+    if hasattr(rate_res, "__await__"):
+        rate_res = await rate_res
+
+    is_limited = bool(rate_res[0])
+    retry_after = rate_res[2] if len(rate_res) > 2 else 0
+
     if is_limited:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Try again later."
+            detail="Rate limit exceeded. Try again later.",
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(rate_limiter.requests_per_min),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(retry_after),
+            }
         )
 
     return api_key
@@ -94,7 +85,8 @@ class ChatRequest(BaseModel):
     query: Annotated[str, Query(description="The conversational prompt or mood query", min_length=2, max_length=500)]
     top_k: int = Field(default=5, ge=1, le=20, description="Number of candidate cards to retrieve")
     allow_adult: bool = Field(default=False, description="Whether to include 18+ adult titles")
-    session_id: Optional[str] = Field(default=None, description="Optional multi-turn session ID (Sprint 4 hook)")
+    session_id: Optional[str] = Field(default=None, description="Optional multi-turn session ID")
+    user_id: Optional[str] = Field(default=None, description="Optional user ID for cross-session watched/dropped history persistence")
     seen_ids: Optional[list[int]] = Field(default=None, description="Optional list of anime IDs to exclude")
 
 
@@ -125,7 +117,6 @@ async def recommend(
         allow_adult=request.allow_adult
     )
 
-
     return RecommendResponse(
         query=request.query,
         count=len(results),
@@ -145,12 +136,21 @@ async def chat_endpoint(
     api_key: str = Depends(get_api_key),
 ):
     """
-    Conversational SSE streaming endpoint (Sprint 3).
-    Dual-stream protocol:
-    1. Immediate Metadata Cards (TTFT < 1.5s)
-    2. Streaming Taste Concierge Personal Rationale
+    Conversational SSE streaming endpoint (Sprint 3 & Sprint 4).
+    Dual-stream protocol with multi-turn Upstash Redis state tracking:
+    1. Immediate Metadata Cards with session_id (TTFT < 1.5s)
+    2. Streaming Taste Concierge Personal Rationale with multi-turn history
+    3. Automatic candidate ID exclusion recording to prevent title recurrence
     """
     seen_ids_set = set(request.seen_ids) if request.seen_ids else None
+    assigned_session_id = request.session_id or str(uuid.uuid4())
+
+    response_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Session-ID": assigned_session_id,
+    }
 
     return StreamingResponse(
         orchestrator.stream_chat(
@@ -158,12 +158,10 @@ async def chat_endpoint(
             top_k=request.top_k,
             allow_adult=request.allow_adult,
             seen_ids=seen_ids_set,
+            session_id=assigned_session_id,
+            user_id=request.user_id,
             is_disconnected=raw_request.is_disconnected,
         ),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=response_headers,
     )

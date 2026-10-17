@@ -29,13 +29,32 @@ During the containerisation and development phase, several critical engineering 
 * **Tradeoff:** Installing PyTorch with CUDA support increases the Docker image size significantly (~4 GB vs ~1.5 GB for CPU-only).
 * **Decision:** The RAG API uses the CUDA-enabled image for production inference speed. The Data Pipeline uses a lean CPU-only image since it runs on standard GitHub Actions runners. Both use multi-stage builds to strip out build tools (`build-essential`) from the final image.
 
+### 6. Upstash Redis REST SLA vs. Fallback Timeout
+* **Tradeoff / Blocker:** While Upstash Redis provides serverless REST connectivity ideal for ephemeral serverless containers, transient cloud network jitter or REST endpoint latency spikes (>100–200ms) could stall conversational SSE pipelines and starve FastAPI's single-threaded event loop under concurrent traffic.
+* **Decision / Fix:** Implemented a strict 150ms circuit breaker timeout (`DEFAULT_REDIS_TIMEOUT_SEC = 0.150`) around all Redis network operations (`asyncio.wait_for(...)`) paired with a thread-safe local in-memory fallback store (`InMemoryStateStore`). If Redis calls exceed 150ms or cloud credentials are unset/unreachable, the system silently activates the fallback store without raising unhandled exceptions, preventing container event loop starvation and preserving seamless sub-second conversational TTFT.
+
+### 7. Dual-Mode Rate Limit Result Interface
+* **Issue:** Replacing the synchronous in-memory rate limiter with an asynchronous Redis sorted-set rate limiter broke existing legacy unit tests and synchronous route callers expecting immediate 2-tuple unpacking `(is_limited, remaining)`. However, modern FastAPI endpoint security dependencies need non-blocking `await` semantics and RFC 6585 metadata (`retry_after`, headers).
+* **Fix:** Engineered `DualModeRateLimitResult`, a polymorphic container implementing both synchronous iterable protocol (`__iter__`, `__getitem__`, `__bool__` yielding `(is_limited, remaining)`) and the awaitable protocol (`__await__`). This enables legacy test suites to continue unpacking `is_limited, remaining = rate_limiter.is_rate_limited(key)` while modern async endpoints seamlessly execute `rate_res = await rate_res` to extract full 3-tuple telemetry `(is_limited, remaining, retry_after)`.
+
+### 8. Starlette Client Disconnection Monitoring in Long-Lived SSE Streams
+* **Issue:** When users navigate away, refresh, or close browser tabs during dual-stream SSE generation (`POST /chat`), background tasks continue querying LLMs and generating tokens, causing orphaned compute tasks, OpenAI API credit waste, and socket resource leaks.
+* **Fix:** Threaded Starlette's `request.is_disconnected` callable through `chat_endpoint` into `orchestrator.stream_chat` and `synthesizer.stream_pitch`. The generator proactively awaits `is_disconnected()` at three key lifecycle checkpoints (pre-retrieval, post-retrieval, and per-token chunk yield), immediately terminating generation via early return and catching `GeneratorExit` to gracefully flush session metrics.
+
 ---
 
 ## Changelog
 
 > Keeping a changelog helps track architectural pivots, understand why certain decisions were made, and leaves a paper trail for future collaborators.
 
-### v1.5.0 (Current): Sprint 3 Conversational Orchestration & Dual-Stream SSE
+### v1.6.0 (Current): Sprint 4 Upstash Redis State Management, Title Exclusion & Production Smoke Verification
+- **Upstash Redis State Integration:** Deployed serverless REST Redis client (`upstash-redis` asyncio) with a 30-minute rolling TTL (`1800s`) tracking the last 5 dialogue turns per session (`session:{session_id}`). Integrated a thread-safe `InMemoryStateStore` cache-aside fallback with a 150ms circuit breaker that seamlessly absorbs network degradations or missing cloud credentials without raising exceptions or stalling the event loop.
+- **Seen/Watched Title Exclusion:** Implemented cross-turn recommendation deduplication guaranteeing 0% title recurrence. Seen and recommended anime IDs are persistently tracked in Redis sets (`user:{user_id}:seen_ids`) and merged with request-level exclusions via $O(1)$ set subtraction directly inside `Ranker.merge_deduplicate()`, keeping PostgreSQL vector search clean and unconstrained.
+- **Distributed Sliding-Window Rate Limiting:** Built `DistributedRateLimiter` using Redis Sorted Sets (`ZSET`) driven by an atomic Lua script (`eval`). Server-side `redis.call('TIME')` and atomic execution eliminate container clock skew and TOCTOU concurrency race conditions across serverless Modal replicas. Enforces RFC 6585 compliance with `HTTP 429 Too Many Requests`, returning `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers.
+- **Conversational Web MVP Integration:** Fully wired `POST /chat` dual-stream SSE endpoint to coordinate the multi-turn session lifecycle. Automatically assigns/persists `session_id`, passes historical dialogue context into `RecommendationSynthesizer`, and commits completed turns and recommended anime IDs upon completion. Includes client disconnect monitoring via `request.is_disconnected`.
+- **Test Consolidation & Production Smoke Suite:** Consolidated Sprint 4 state, rate limiting, and web chat integration tests into `test/pipeline/test_sprint4_state_and_web_chat.py`. Authored an exhaustive 46-test isolated smoke test suite in `test/smoke/test_isolated_smoke.py` covering end-to-end API endpoints, Modal RPC client abstractions, guardrails, HyDE generation, database connection resilience, and dual-mode interfaces without requiring live external services.
+
+### v1.5.0: Sprint 3 Conversational Orchestration & Dual-Stream SSE
 - **Pre-Retrieval Domain Guardrails:** Added `DomainGuardrails` executing in <0.05ms (AC 3.2). Unconditionally blocks prompt injections (overrides, system prompt extraction, jailbreaks) and conditionally blocks out-of-scope tasks (coding, math, politics, crypto, weather) with protected whitelist rules ensuring zero false positives on real anime titles (*Code Geass*, *Steins;Gate*, *Erased*, *Ghost in the Shell*, *Monster*, *Death Note*).
 - **Dual-Stream Server-Sent Events (`POST /chat`):** Decoupled candidate card rendering from conversational pitch streaming. Reranked metadata cards emit immediately in `event: metadata` (TTFT < 1.5s, AC 3.1), followed by token-by-token streaming pitches (`event: token`) and final timing stats (`event: done`).
 - **OpenAI Circuit Breaker & Fallback:** Integrated `tenacity` retry with timeout. If OpenAI returns HTTP 500, 429, or times out, the circuit breaker triggers a deterministic catalog fallback pitch, guaranteeing zero 500 crashes and 100% metadata card preservation (AC 3.3).

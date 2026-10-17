@@ -15,3 +15,4 @@ torch==2.7.1+cu118
 modal==1.4.3
 google-genai==2.16.0
 openai==3.6.0
+upstash-redis>=1.8.0

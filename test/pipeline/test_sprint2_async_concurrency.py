@@ -518,6 +518,7 @@ class TestFastAPIRecommendEndpoint:
 
         # Mock either async_rag_pipeline or sync rag_pipeline depending on implementation
         with patch.dict(os.environ, {"MY_API_KEY": "test-secret-key"}), \
+             patch("backend.main.log_recommendation_event", return_value=True), \
              patch("backend.main.rag_pipeline", return_value=(mock_results, mock_timings)), \
              patch("backend.main.async_rag_pipeline", new_callable=AsyncMock, return_value=(mock_results, mock_timings)), \
              patch("backend.main.RateLimiter.is_rate_limited", return_value=(False, 19)):
@@ -535,8 +536,7 @@ class TestFastAPIRecommendEndpoint:
                 assert data["query"] == "space bounty hunter"
                 assert data["count"] == 1
                 assert data["results"][0]["title_romaji"] == "Cowboy Bebop"
-                assert "extra" in data
-                assert "timings" in data["extra"]
+                assert "extra" not in data
 
                 # Test 20 concurrent requests with EventLoopLagMonitor
                 async with EventLoopLagMonitor(interval=0.005) as monitor:

@@ -236,7 +236,7 @@ def db_conn():
 @pytest.fixture(scope="session", autouse=True)
 def clean_test_database_artifacts(db_conn):
     """
-    Snapshots pre-existing key and audit log IDs before the test run,
+    Snapshots pre-existing key, audit log, and telemetry IDs before the test run,
     and purges all newly created test rows on session teardown so local/staging
     databases are never polluted by test runs.
     """
@@ -245,6 +245,10 @@ def clean_test_database_artifacts(db_conn):
         initial_key_ids = set(r[0] for r in cur.fetchall())
         cur.execute("SELECT id FROM app_auth.key_audit_log;")
         initial_audit_ids = set(r[0] for r in cur.fetchall())
+        cur.execute("SELECT id FROM telemetry.recommendation_logs;")
+        initial_rlog_ids = set(r[0] for r in cur.fetchall())
+        cur.execute("SELECT api_key_id, day FROM telemetry.api_key_usage_daily;")
+        initial_usage_keys = set((r[0], r[1]) for r in cur.fetchall())
 
     yield
 
@@ -253,6 +257,8 @@ def clean_test_database_artifacts(db_conn):
         current_key_ids = set(r[0] for r in cur.fetchall())
         new_key_ids = list(current_key_ids - initial_key_ids)
         if new_key_ids:
+            cur.execute("DELETE FROM telemetry.recommendation_logs WHERE api_key_id = ANY(%s::uuid[]);", (new_key_ids,))
+            cur.execute("DELETE FROM telemetry.api_key_usage_daily WHERE api_key_id = ANY(%s::uuid[]);", (new_key_ids,))
             cur.execute("DELETE FROM app_auth.key_audit_log WHERE api_key_id = ANY(%s::uuid[]);", (new_key_ids,))
             cur.execute("DELETE FROM app_auth.api_keys WHERE id = ANY(%s::uuid[]);", (new_key_ids,))
 
@@ -261,6 +267,20 @@ def clean_test_database_artifacts(db_conn):
         new_audit_ids = list(current_audit_ids - initial_audit_ids)
         if new_audit_ids:
             cur.execute("DELETE FROM app_auth.key_audit_log WHERE id = ANY(%s);", (new_audit_ids,))
+
+        cur.execute("SELECT id FROM telemetry.recommendation_logs;")
+        current_rlog_ids = set(r[0] for r in cur.fetchall())
+        new_rlog_ids = list(current_rlog_ids - initial_rlog_ids)
+        if new_rlog_ids:
+            cur.execute("DELETE FROM telemetry.recommendation_logs WHERE id = ANY(%s);", (new_rlog_ids,))
+
+        cur.execute("SELECT api_key_id, day FROM telemetry.api_key_usage_daily;")
+        current_usage_keys = set((r[0], r[1]) for r in cur.fetchall())
+        for key_id, day_val in (current_usage_keys - initial_usage_keys):
+            cur.execute(
+                "DELETE FROM telemetry.api_key_usage_daily WHERE api_key_id = %s AND day = %s;",
+                (key_id, day_val),
+            )
 
 
 @pytest.fixture(autouse=True)

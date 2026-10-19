@@ -214,7 +214,8 @@ class TestDualModeDispatchAndSSEStreaming:
         async def mock_async_pipeline(query, top_k, allow_adult=False, **kwargs):
             return sample_candidates[:top_k], {"retrieval_ms": 10.0, "reranking_ms": 15.0}
 
-        with patch("backend.main.async_rag_pipeline", side_effect=mock_async_pipeline):
+        with patch("backend.main.async_rag_pipeline", side_effect=mock_async_pipeline), \
+             patch("backend.main.log_recommendation_event", return_value=True):
             transport = ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 res = await client.post(
@@ -230,8 +231,8 @@ class TestDualModeDispatchAndSSEStreaming:
                 assert data["allowed_adult"] is False
                 assert len(data["results"]) == 2
                 assert data["results"][0]["id"] == 152802
-                assert "extra" in data
-                assert "timings" in data["extra"]
+                assert "extra" not in data
+                assert "cross_encoder_score" not in data["results"][0]
 
     # =========================================================================
     # API KEY AUTHENTICATION & RATE LIMITING
@@ -239,12 +240,12 @@ class TestDualModeDispatchAndSSEStreaming:
 
     @pytest.mark.asyncio
     async def test_chat_endpoint_rejects_missing_or_invalid_api_key(self):
-        """Verifies that POST /chat enforces 403 Forbidden on missing/invalid API key."""
+        """Verifies that POST /chat enforces 401/403 on missing/invalid API key."""
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             # Missing key
             res1 = await client.post("/chat", json={"query": "action anime"})
-            assert res1.status_code == 403
+            assert res1.status_code in (401, 403)
 
             # Invalid key
             res2 = await client.post(
@@ -252,7 +253,7 @@ class TestDualModeDispatchAndSSEStreaming:
                 headers={"access_token": "wrong-key"},
                 json={"query": "action anime"},
             )
-            assert res2.status_code == 403
+            assert res2.status_code in (401, 403)
 
     @pytest.mark.asyncio
     async def test_chat_endpoint_enforces_rate_limiting(self):

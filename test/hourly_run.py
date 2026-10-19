@@ -13,7 +13,7 @@ Flow:
 
 Environment variables required:
   GEMINI_API_KEY      — Google AI Studio API key
-  MODAL_ACCESS_TOKEN  — FastAPI backend access token
+  MODAL_ADMIN_API_KEY / MODAL_ACCESS_TOKEN — Dedicated admin-role API key from GitHub Secrets
 """
 
 import json
@@ -23,8 +23,12 @@ from datetime import datetime, timezone
 import random
 
 import requests
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None  # type: ignore[assignment]
+    types = None  # type: ignore[assignment]
 from pydantic import BaseModel, Field
 
 
@@ -32,7 +36,10 @@ from pydantic import BaseModel, Field
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODAL_API_URL = "https://iamcbn--anime-recommender-api-fastapi-app.modal.run/recommend"
+MODAL_API_URL = os.environ.get(
+    "MODAL_API_URL",
+    "https://iamcbn--anime-recommender-api-fastapi-app.modal.run/admin/recommend",
+)
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "data", "anime_results.jsonl")
 
 GEMINI_MODEL = "gemini-3.6-flash"
@@ -163,8 +170,9 @@ def generate_prompt_via_gemini(api_key: str) -> dict:
 
 
 def call_recommender_api(description: str, access_token: str) -> requests.Response:
-    """POST the description to the Modal FastAPI endpoint."""
+    """POST the description to the Modal FastAPI /admin/recommend endpoint."""
     headers = {
+        "Authorization": f"Bearer {access_token}",
         "access_token": access_token,
         "Content-Type": "application/json",
     }
@@ -191,15 +199,15 @@ def append_result(record: dict) -> None:
 
 
 def main() -> None:
-    # --- Load secrets from environment ---
+    # --- Load secrets from environment (use dedicated admin key from GitHub Secrets, never break-glass ADMIN_API_KEY) ---
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    modal_access_token = os.environ.get("MODAL_ACCESS_TOKEN")
+    modal_access_token = os.environ.get("MODAL_ADMIN_API_KEY") or os.environ.get("MODAL_ACCESS_TOKEN")
 
     if not gemini_api_key:
         print("ERROR: GEMINI_API_KEY environment variable is not set.", file=sys.stderr)
         sys.exit(1)
     if not modal_access_token:
-        print("ERROR: MODAL_ACCESS_TOKEN environment variable is not set.", file=sys.stderr)
+        print("ERROR: MODAL_ADMIN_API_KEY / MODAL_ACCESS_TOKEN environment variable is not set.", file=sys.stderr)
         sys.exit(1)
 
     NUM_RUNS = 4

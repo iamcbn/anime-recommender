@@ -163,12 +163,17 @@ def isolate_environment(tmp_path, monkeypatch):
     - Sets clean API keys.
     - Sets isolated SQLite cache path in tmp_path.
     - Clears rate limiter request history between tests.
+    - Mocks background telemetry DB writes so smoke tests remain isolated from PostgreSQL.
     """
     temp_cache_db = tmp_path / "smoke_llm_cache.db"
     monkeypatch.setenv("MY_API_KEY", TEST_API_KEY)
+    monkeypatch.setenv("ADMIN_API_KEY", "test-smoke-admin-key")
     monkeypatch.setenv("OPENAI_API_KEY", TEST_OPENAI_KEY)
     monkeypatch.setenv("LLM_CACHE_PATH", str(temp_cache_db))
     monkeypatch.setenv("INFERENCE_MODE", "local")
+
+    monkeypatch.setattr("backend.main.log_recommendation_event", lambda **kwargs: True)
+    monkeypatch.setattr("backend.telemetry.logger.log_recommendation_event", lambda **kwargs: True)
 
     # Clear rate limiter and state manager state so tests do not interfere with each other
     rate_limiter.reset()
@@ -278,13 +283,13 @@ class TestGetRootEndpoint:
 # =============================================================================
 
 class TestPostRecommendSuccess:
-    """Smoke test for POST /recommend success flow."""
+    """Smoke test for POST /recommend and /admin/recommend success flow."""
 
     @pytest.mark.asyncio
     async def test_post_recommend_returns_200_valid_schema(self, async_client):
         """
-        POST /recommend with valid payload and access_token must return 200,
-        conform strictly to RecommendResponse schema, and provide full timings.
+        POST /recommend returns clean anime cards (no extra/scores) and
+        POST /admin/recommend conforms strictly to RecommendResponse schema with full timings.
         """
         payload = {
             "query": "space bounty hunter",
@@ -301,25 +306,32 @@ class TestPostRecommendSuccess:
             assert response.status_code == 200
             data = response.json()
 
-            # Schema validation via Pydantic model
-            validated = RecommendResponse.model_validate(data)
-            assert validated.query == "space bounty hunter"
-            assert validated.count == len(SAMPLE_CANDIDATES)
-            assert validated.allowed_adult is False
-            assert len(validated.results) == 2
-            assert validated.results[0]["title_romaji"] == "Cowboy Bebop"
-
-            # Timing verification
-            timings = validated.extra.get("timings", {})
-            assert EXPECTED_TIMING_KEYS.issubset(timings.keys())
-            expected_total = sum(SAMPLE_TIMINGS.values())
-            assert abs(validated.extra.get("total_ms", 0.0) - expected_total) < 1e-4
+            assert data["query"] == "space bounty hunter"
+            assert data["count"] == len(SAMPLE_CANDIDATES)
+            assert data["allowed_adult"] is False
+            assert len(data["results"]) == 2
+            assert data["results"][0]["title_romaji"] == "Cowboy Bebop"
+            assert "extra" not in data
+            assert "cross_encoder_score" not in data["results"][0]
 
             mock_pipe.assert_awaited_once_with(
                 query="space bounty hunter",
                 top_k=5,
                 allow_adult=False,
             )
+
+            # Verify /admin/recommend provides full RecommendResponse schema & timings
+            admin_response = await async_client.post(
+                "/admin/recommend",
+                json=payload,
+                headers={"Authorization": "Bearer test-smoke-admin-key"},
+            )
+            assert admin_response.status_code == 200
+            validated = RecommendResponse.model_validate(admin_response.json())
+            timings = validated.extra.get("timings", {})
+            assert EXPECTED_TIMING_KEYS.issubset(timings.keys())
+            expected_total = sum(SAMPLE_TIMINGS.values())
+            assert abs(validated.extra.get("total_ms", 0.0) - expected_total) < 1e-4
 
 
 # =============================================================================

@@ -21,6 +21,7 @@ Coordinates the end-to-end conversational RAG pipeline:
 import json
 import time
 import uuid
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any, Set, Tuple, AsyncGenerator, Callable, Awaitable
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ from .helper.guardrails import DomainGuardrails, GuardrailResult
 from .helper.synthesizer import RecommendationSynthesizer
 from .helper.state_manager import StateManager, state_manager as default_state_manager
 from .rag_pipeline import async_rag_pipeline
+import backend.telemetry.logger as telemetry_logger
+from backend.telemetry.logger import strip_scores, sanitize_for_json
 
 logger = logging.getLogger("anime_recommender.orchestrator")
 
@@ -39,7 +42,7 @@ logger = logging.getLogger("anime_recommender.orchestrator")
 
 def format_sse(event: str, data: Any) -> str:
     """Formats an event name and JSON-serializable data dictionary into standard SSE payload."""
-    payload = json.dumps(data, ensure_ascii=False)
+    payload = json.dumps(sanitize_for_json(data), ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -114,16 +117,23 @@ class PipelineOrchestrator:
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+        api_key_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        client_ip: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        client_metadata: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Dual-Stream SSE generator powering POST /chat (Sprint 3 & Sprint 4).
 
         Emits:
         1. event: error    (if pre-retrieval validation fails, <15ms)
-        2. event: warning  (if retrieval confidence is low, score < -6.5)
-        3. event: metadata (immediate candidate anime cards, TTFT < 1.5s, session_id attached)
+        2. event: warning  (if retrieval confidence is low, score < -6.5; top_score stripped at SSE serialization)
+        3. event: metadata (immediate candidate anime cards with scores stripped at SSE serialization, TTFT < 1.5s)
         4. event: token    (streamed tokens of personalized pitch, spoiler-scrubbed)
         5. event: done     (final end-to-end timings, token counts, and session metrics)
+
+        Logs telemetry once per turn after the stream ends via asyncio.to_thread.
         """
         stream_start = time.perf_counter()
         stream_start_epoch = time.time()
@@ -134,6 +144,12 @@ class PipelineOrchestrator:
         # ---------------------------------------------------------
         active_session_id = session_id or str(uuid.uuid4())
         active_user_id = user_id or f"anon:{active_session_id}"
+        active_request_id = request_id or str(uuid.uuid4())
+
+        candidates: List[Dict[str, Any]] = []
+        log_status = "ok"
+        log_status_code = 200
+        log_error: Optional[str] = None
 
         try:
             # ---------------------------------------------------------
@@ -145,6 +161,9 @@ class PipelineOrchestrator:
             pipeline_timings["guardrail_validation_ms"] = validation_ms
 
             if not validation.is_valid:
+                log_status = "error"
+                log_status_code = 400
+                log_error = f"[{validation.category}] {validation.detail}"
                 logger.info(
                     f"[PipelineOrchestrator] Query rejected by guardrail: '{query}' "
                     f"[{validation.category}]: {validation.detail} in {validation_ms:.2f}ms"
@@ -202,6 +221,9 @@ class PipelineOrchestrator:
                 )
                 pipeline_timings.update(retrieval_timings)
             except Exception as e:
+                log_status = "error"
+                log_status_code = 500
+                log_error = str(e)
                 logger.exception("[PipelineOrchestrator] Retrieval pipeline failure")
                 yield format_sse("error", {
                     "detail": "Failed to retrieve anime recommendations. Please try again shortly.",
@@ -231,13 +253,14 @@ class PipelineOrchestrator:
             # ---------------------------------------------------------
             # STEP 5: CONFIDENCE THRESHOLDING (< -6.5 CHECK)
             # ---------------------------------------------------------
+            # Guardrail check uses unstripped cross_encoder_score internally;
+            # top_score is stripped at SSE serialization per Sprint 3 spec.
             is_confident, confidence_msg = self.guardrails.check_retrieval_confidence(candidates)
             if not is_confident:
                 logger.warning(f"[PipelineOrchestrator] Low retrieval confidence: {confidence_msg}")
                 yield format_sse("warning", {
                     "warning": "Low retrieval confidence",
                     "detail": confidence_msg,
-                    "top_score": candidates[0].get("cross_encoder_score") if candidates else None,
                     "session_id": active_session_id,
                 })
 
@@ -247,12 +270,13 @@ class PipelineOrchestrator:
             ttft_ms = round((time.perf_counter() - stream_start) * 1000, 2)
             pipeline_timings["ttft_metadata_ms"] = ttft_ms
 
+            public_candidates = strip_scores(candidates)
             yield format_sse("metadata", {
                 "query": query,
                 "session_id": active_session_id,
                 "user_id": active_user_id,
-                "count": len(candidates),
-                "candidates": candidates,
+                "count": len(public_candidates),
+                "candidates": public_candidates,
                 "timings": pipeline_timings,
             })
 
@@ -323,12 +347,46 @@ class PipelineOrchestrator:
         except GeneratorExit:
             logger.info(f"[PipelineOrchestrator] Stream cancelled by client for session {active_session_id}")
         except Exception as e:
+            log_status = "error"
+            log_status_code = 500
+            log_error = str(e)
             logger.exception(f"[PipelineOrchestrator] Unexpected stream failure: {e}")
             yield format_sse("error", {
                 "detail": "An unexpected error occurred during chat streaming.",
                 "error": str(e),
                 "session_id": active_session_id,
             })
+        finally:
+            total_ms = pipeline_timings.get("total_duration_ms") or round(
+                (time.perf_counter() - stream_start) * 1000, 2
+            )
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    asyncio.to_thread(
+                        telemetry_logger.log_recommendation_event,
+                        request_id=active_request_id,
+                        endpoint="chat",
+                        source="user",
+                        api_key_id=api_key_id,
+                        session_id=active_session_id,
+                        query=query,
+                        top_k=top_k,
+                        allow_adult=allow_adult,
+                        results=candidates,
+                        results_count=len(candidates),
+                        status=log_status,
+                        status_code=log_status_code,
+                        error=log_error,
+                        total_ms=total_ms,
+                        timings=pipeline_timings,
+                        client_ip=client_ip,
+                        user_agent=user_agent,
+                        client_metadata=client_metadata,
+                    )
+                )
+            except Exception as log_exc:
+                logger.debug(f"[PipelineOrchestrator] Could not schedule chat telemetry: {log_exc}")
 
 
 # Module singleton for production FastAPI dispatch

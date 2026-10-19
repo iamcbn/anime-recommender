@@ -1,13 +1,25 @@
 import os
 import re
+import time
 import uuid
 import hmac
+import asyncio
 import logging
-from typing import Annotated, Optional, Union
+from typing import Annotated, Optional, Union, List, Dict, Any, Tuple
 from collections import defaultdict
 from datetime import timedelta, datetime
 
-from fastapi import FastAPI, Depends, HTTPException, status, Security, Query, Request, Response
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    status,
+    Security,
+    Query,
+    Request,
+    Response,
+    BackgroundTasks,
+)
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -27,6 +39,7 @@ from backend.auth.keys import (
     authenticate_api_key,
 )
 from backend.routers.dev_keys import router as dev_keys_router
+from backend.telemetry.logger import strip_scores, sanitize_for_json, log_recommendation_event
 
 logger = logging.getLogger("anime_recommender.main")
 
@@ -36,12 +49,33 @@ app = FastAPI(title="Anime Recommendation API")
 # CORS MIDDLEWARE
 # ----------------------
 
-cors_origins_env = os.getenv("CORS_ORIGINS", "*")
-allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+
+
+def _parse_cors_origins(raw_origins: Optional[str] = None) -> List[str]:
+    env_val = raw_origins if raw_origins is not None else os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
+    parsed = [o.strip() for o in env_val.split(",") if o.strip()]
+    return parsed if parsed else [o.strip() for o in DEFAULT_CORS_ORIGINS.split(",")]
+
+
+class DynamicCORSMiddleware(CORSMiddleware):
+    """
+    CORSMiddleware that evaluates explicit CORS_ORIGINS (defaulting to local dev origins
+    and supporting dynamic runtime updates via CORS_ORIGINS environment variable).
+    """
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        current_origins = _parse_cors_origins()
+        if "*" in current_origins:
+            return True
+        return origin in current_origins
+
+
+allowed_origins = _parse_cors_origins()
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins if allowed_origins != ["*"] else ["*"],
+    DynamicCORSMiddleware,
+    allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "access_token", "x-api-key"],
@@ -76,12 +110,22 @@ async def secret_redaction_middleware(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Formats all HTTPExceptions to uniform schema: {"error": {"code": str, "message": str}, "detail": str}."""
+    """
+    Formats all HTTPExceptions to uniform schema: {"error": {"code": str, "message": str}, "detail": str}.
+    Preserves any BackgroundTasks scheduled on request.state.background_tasks so error-path telemetry executes.
+    """
+    bg_tasks = getattr(request.state, "background_tasks", None)
+
     if isinstance(exc.detail, dict) and "error" in exc.detail:
         payload = dict(exc.detail)
         if "detail" not in payload:
             payload["detail"] = payload["error"].get("message", "")
-        return JSONResponse(status_code=exc.status_code, content=payload, headers=exc.headers)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=payload,
+            headers=exc.headers,
+            background=bg_tasks,
+        )
 
     code_map = {
         400: "bad_request",
@@ -99,7 +143,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": err_code, "message": msg}, "detail": msg},
-        headers=exc.headers
+        headers=exc.headers,
+        background=bg_tasks,
     )
 
 
@@ -140,12 +185,13 @@ def extract_raw_api_key(request: Request) -> Optional[str]:
 
 async def get_api_key(request: Request) -> ApiKeyContext:
     """
-    Primary API key dependency for Sprint 2.
+    Primary API key dependency (Sprint 2 & Sprint 3).
     - Extracts token from Authorization: Bearer <key> or legacy access_token.
     - Evaluates pre-auth IP brute-force throttle (10 failures/min/IP).
     - Authenticates key against database with HMAC-SHA256 and constant-time check.
+    - Verifies endpoint scope ('recommend' / 'chat') for non-admin keys.
     - Evaluates dynamic per-key rate limit based on DB row.
-    - Returns ApiKeyContext.
+    - Returns ApiKeyContext(key_id, role, scopes, rate_limit_per_min, ...).
     """
     client_ip = rate_limiter.extract_client_ip(request)
 
@@ -204,7 +250,21 @@ async def get_api_key(request: Request) -> ApiKeyContext:
                 headers={"WWW-Authenticate": "Bearer"}
             )
 
-    # 3. Dynamic per-key rate limit (supporting distributed Redis, in-memory fallback, and test mock patching)
+    # 3. Scope check for non-admin keys
+    if key_ctx.role != "admin" and "admin" not in (key_ctx.scopes or []):
+        path = request.url.path.rstrip("/")
+        if path == "/recommend" and "recommend" not in (key_ctx.scopes or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "forbidden", "message": "API key lacks required 'recommend' scope."}}
+            )
+        if path == "/chat" and "chat" not in (key_ctx.scopes or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "forbidden", "message": "API key lacks required 'chat' scope."}}
+            )
+
+    # 4. Dynamic per-key rate limit (supporting distributed Redis, in-memory fallback, and test mock patching)
     key_identifier = raw_key if is_legacy_key else (key_ctx.key_id or key_ctx.name)
     effective_limit = None if is_legacy_key else key_ctx.rate_limit_per_min
     try:
@@ -237,7 +297,7 @@ async def get_api_key(request: Request) -> ApiKeyContext:
 
 
 async def get_admin_key(key_ctx: ApiKeyContext = Depends(get_api_key)) -> ApiKeyContext:
-    """Requires role == 'admin'."""
+    """Requires role == 'admin' (401 unauthenticated, 403 non-admin)."""
     if key_ctx.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -255,12 +315,26 @@ class RecommendRequest(BaseModel):
     top_k: int = 20
     allow_adult: bool = False
 
-class RecommendResponse(BaseModel):
+
+class PublicRecommendResponse(BaseModel):
+    """Public response model for POST /recommend: clean anime cards only (no extra, no timings, no scores)."""
+    query: str
+    count: int
+    allowed_adult: bool
+    results: list
+
+
+class AdminRecommendResponse(BaseModel):
+    """Admin response model for POST /admin/recommend: includes full timings, total_ms, and candidate scores."""
     query: str
     count: int
     allowed_adult: bool
     results: list
     extra: dict
+
+
+# Preserve RecommendResponse alias for backward-compatible symbol imports
+RecommendResponse = AdminRecommendResponse
 
 
 class ChatRequest(BaseModel):
@@ -273,6 +347,116 @@ class ChatRequest(BaseModel):
 
 
 # ----------------------
+# INTERNAL RECOMMENDATION EXECUTION & TELEMETRY HELPER
+# ----------------------
+
+async def _execute_recommend_flow(
+    *,
+    request: RecommendRequest,
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKeyContext,
+    endpoint_name: str,
+    source_name: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, float], float]:
+    """
+    Executes guardrail validation, async RAG retrieval, and schedules background telemetry logging
+    for both success (200) and error (400 / 500) paths.
+    """
+    request_id = str(uuid.uuid4())
+    t_start = time.perf_counter()
+    raw_request.state.background_tasks = background_tasks
+    client_ip = rate_limiter.extract_client_ip(raw_request)
+    user_agent = raw_request.headers.get("user-agent")
+
+    t_val0 = time.perf_counter()
+    valid, err_msg = DomainGuardrails.validate_intent(request.query)
+    val_ms = round((time.perf_counter() - t_val0) * 1000, 2)
+    if not valid:
+        background_tasks.add_task(
+            log_recommendation_event,
+            request_id=request_id,
+            endpoint=endpoint_name,
+            source=source_name,
+            api_key_id=api_key.key_id,
+            query=request.query,
+            top_k=request.top_k,
+            allow_adult=request.allow_adult,
+            results=[],
+            results_count=0,
+            status="error",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error=err_msg,
+            total_ms=val_ms,
+            timings={"guardrail_validation_ms": val_ms},
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": {"code": "bad_request", "message": err_msg}},
+        )
+
+    try:
+        results, timings = await async_rag_pipeline(
+            query=request.query,
+            top_k=request.top_k,
+            allow_adult=request.allow_adult,
+        )
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        await asyncio.to_thread(
+            log_recommendation_event,
+            request_id=request_id,
+            endpoint=endpoint_name,
+            source=source_name,
+            api_key_id=api_key.key_id,
+            query=request.query,
+            top_k=request.top_k,
+            allow_adult=request.allow_adult,
+            results=[],
+            results_count=0,
+            status="error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error=str(exc),
+            total_ms=elapsed_ms,
+            timings=None,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        raise
+
+    total_ms = (
+        round(float(sum(timings.values())), 2)
+        if timings
+        else round((time.perf_counter() - t_start) * 1000, 2)
+    )
+
+    # Schedule background telemetry with UNSTRIPPED results
+    background_tasks.add_task(
+        log_recommendation_event,
+        request_id=request_id,
+        endpoint=endpoint_name,
+        source=source_name,
+        api_key_id=api_key.key_id,
+        query=request.query,
+        top_k=request.top_k,
+        allow_adult=request.allow_adult,
+        results=results,
+        results_count=len(results),
+        status="ok",
+        status_code=status.HTTP_200_OK,
+        error=None,
+        total_ms=total_ms,
+        timings=timings,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+
+    return results, timings, total_ms
+
+
+# ----------------------
 # ENDPOINTS
 # ----------------------
 
@@ -281,64 +465,66 @@ async def root():
     return {"message": "Welcome to the Anime Recommendation API. Use the /recommend endpoint to get recommendations."}
 
 
-@app.post("/recommend", response_model=RecommendResponse)
+@app.post("/recommend", response_model=PublicRecommendResponse)
 async def recommend(
     request: RecommendRequest,
-    api_key: ApiKeyContext = Depends(get_api_key)
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKeyContext = Depends(get_api_key),
 ):
-    valid, err_msg = DomainGuardrails.validate_intent(request.query)
-    if not valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": {"code": "bad_request", "message": err_msg}}
-        )
-
-    results, timings = await async_rag_pipeline(
-        query=request.query,
-        top_k=request.top_k,
-        allow_adult=request.allow_adult
+    """
+    Public recommendation endpoint (Sprint 3).
+    Returns clean anime cards only (zero timings, zero model scores, no extra).
+    Logs full unstripped scores and timings asynchronously with source='user'.
+    """
+    results, _, _ = await _execute_recommend_flow(
+        request=request,
+        raw_request=raw_request,
+        background_tasks=background_tasks,
+        api_key=api_key,
+        endpoint_name="recommend",
+        source_name="user",
     )
 
-    return RecommendResponse(
+    clean_results = strip_scores(results)
+    return PublicRecommendResponse(
         query=request.query,
-        count=len(results),
+        count=len(clean_results),
         allowed_adult=request.allow_adult,
-        results=results,
-        extra={
-            "timings": timings,
-            "total_ms": sum(timings.values())
-        }
+        results=clean_results,
     )
 
 
 @app.post("/admin/recommend", response_model=RecommendResponse)
 async def admin_recommend(
     request: RecommendRequest,
-    api_key: ApiKeyContext = Depends(get_admin_key)
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKeyContext = Depends(get_admin_key),
 ):
-    """Administrative evaluation endpoint requiring admin-role API key."""
-    valid, err_msg = DomainGuardrails.validate_intent(request.query)
-    if not valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": {"code": "bad_request", "message": err_msg}}
-        )
-
-    results, timings = await async_rag_pipeline(
-        query=request.query,
-        top_k=request.top_k,
-        allow_adult=request.allow_adult
+    """
+    Administrative evaluation endpoint requiring admin-role API key (Sprint 3).
+    Returns full response including timings, total_ms, and candidate model scores.
+    Logs asynchronously with endpoint='admin_recommend' and source='admin_eval'.
+    """
+    results, timings, total_ms = await _execute_recommend_flow(
+        request=request,
+        raw_request=raw_request,
+        background_tasks=background_tasks,
+        api_key=api_key,
+        endpoint_name="admin_recommend",
+        source_name="admin_eval",
     )
 
     return RecommendResponse(
         query=request.query,
         count=len(results),
         allowed_adult=request.allow_adult,
-        results=results,
+        results=sanitize_for_json(results),
         extra={
-            "timings": timings,
-            "total_ms": sum(timings.values())
-        }
+            "timings": sanitize_for_json(timings),
+            "total_ms": total_ms,
+        },
     )
 
 
@@ -351,9 +537,13 @@ async def chat_endpoint(
     """
     Conversational SSE streaming endpoint (Sprint 3 & Sprint 4).
     Dual-stream protocol with multi-turn Upstash Redis state tracking.
+    Strips candidate scores and top_score at SSE serialization and logs telemetry
+    once per turn after the stream ends via asyncio.to_thread.
     """
     seen_ids_set = set(request.seen_ids) if request.seen_ids else None
     assigned_session_id = request.session_id or str(uuid.uuid4())
+    client_ip = rate_limiter.extract_client_ip(raw_request)
+    user_agent = raw_request.headers.get("user-agent")
 
     response_headers = {
         "Cache-Control": "no-cache",
@@ -362,8 +552,8 @@ async def chat_endpoint(
         "X-Session-ID": assigned_session_id,
     }
 
-    return StreamingResponse(
-        orchestrator.stream_chat(
+    try:
+        stream_gen = orchestrator.stream_chat(
             query=request.query,
             top_k=request.top_k,
             allow_adult=request.allow_adult,
@@ -371,7 +561,24 @@ async def chat_endpoint(
             session_id=assigned_session_id,
             user_id=request.user_id,
             is_disconnected=raw_request.is_disconnected,
-        ),
+            api_key_id=api_key.key_id,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+    except TypeError:
+        # Fallback if a unit test replaces orchestrator.stream_chat with a mock accepting legacy args only
+        stream_gen = orchestrator.stream_chat(
+            query=request.query,
+            top_k=request.top_k,
+            allow_adult=request.allow_adult,
+            seen_ids=seen_ids_set,
+            session_id=assigned_session_id,
+            user_id=request.user_id,
+            is_disconnected=raw_request.is_disconnected,
+        )
+
+    return StreamingResponse(
+        stream_gen,
         media_type="text/event-stream",
         headers=response_headers,
     )

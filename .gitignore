@@ -15,9 +15,10 @@ include/
 database.ini
 .env
 
-# Python Bytecode
+# Python Bytecode & Test Cache
 __pycache__/
 *.pyc
+.pytest_cache/
 .continue/
 .claude
 

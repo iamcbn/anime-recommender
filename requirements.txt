@@ -16,3 +16,7 @@ modal==1.4.3
 google-genai==2.16.0
 openai==3.6.0
 upstash-redis>=1.8.0
+PyJWT[crypto]>=2.10.1
+pyarrow>=19.0.0
+cachetools>=5.5.0
+supabase>=2.13.0

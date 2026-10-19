@@ -1,12 +1,16 @@
 import os
+import re
 import uuid
-from typing import Annotated, Optional
+import hmac
+import logging
+from typing import Annotated, Optional, Union
 from collections import defaultdict
 from datetime import timedelta, datetime
 
-from fastapi import FastAPI, Depends, HTTPException, status, Security, Query, Request
-from fastapi.responses import StreamingResponse
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, Depends, HTTPException, status, Security, Query, Request, Response
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from backend.rag_pipeline.rag_pipeline import rag_pipeline, async_rag_pipeline
@@ -18,31 +22,199 @@ from backend.rag_pipeline.helper.rate_limiter import (
     rate_limiter,
 )
 from backend.rag_pipeline.helper.state_manager import state_manager
+from backend.auth.keys import (
+    ApiKeyContext,
+    authenticate_api_key,
+)
+from backend.routers.dev_keys import router as dev_keys_router
 
+logger = logging.getLogger("anime_recommender.main")
 
 app = FastAPI(title="Anime Recommendation API")
 
-API_KEY = os.getenv("MY_API_KEY")
-api_key_header = APIKeyHeader(name="access_token", auto_error=False)
+# ----------------------
+# CORS MIDDLEWARE
+# ----------------------
+
+cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins if allowed_origins != ["*"] else ["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "access_token", "x-api-key"],
+    expose_headers=["X-Session-ID", "Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+)
+
+# Mount Developer Self-Service Router
+app.include_router(dev_keys_router)
+
+
+# ----------------------
+# LOGGING HYGIENE & ERROR HANDLING
+# ----------------------
+
+BEARER_REDACT_REGEX = re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.IGNORECASE)
+KEY_REDACT_REGEX = re.compile(r"ar_live_[a-f0-9]{8}_[A-Za-z0-9_\-]+", re.IGNORECASE)
+
+
+@app.middleware("http")
+async def secret_redaction_middleware(request: Request, call_next):
+    """Ensures raw API keys and Bearer tokens are never exposed in access or debug logs."""
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as exc:
+        raw_msg = str(exc)
+        sanitized_msg = BEARER_REDACT_REGEX.sub(r"\1[REDACTED]", raw_msg)
+        sanitized_msg = KEY_REDACT_REGEX.sub("[REDACTED_API_KEY]", sanitized_msg)
+        logger.error(f"[GatewayException] Error processing {request.method} {request.url.path}: {sanitized_msg}")
+        raise exc
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Formats all HTTPExceptions to uniform schema: {"error": {"code": str, "message": str}, "detail": str}."""
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        payload = dict(exc.detail)
+        if "detail" not in payload:
+            payload["detail"] = payload["error"].get("message", "")
+        return JSONResponse(status_code=exc.status_code, content=payload, headers=exc.headers)
+
+    code_map = {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        409: "conflict",
+        422: "unprocessable_entity",
+        429: "rate_limit_exceeded",
+        500: "internal_server_error",
+        503: "service_unavailable",
+    }
+    err_code = code_map.get(exc.status_code, "error")
+    msg = str(exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": err_code, "message": msg}, "detail": msg},
+        headers=exc.headers
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Formats validation errors to uniform error envelope."""
+    msg = str(exc)
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"error": {"code": "validation_error", "message": msg}, "detail": exc.errors()}
+    )
 
 
 # ----------------------
 # API KEY SECURITY & RATE LIMITING
 # ----------------------
 
-async def get_api_key(
-    request: Request,
-    api_key: str = Security(api_key_header)
-):
-    expected_key = os.getenv("MY_API_KEY", API_KEY)
-    if not expected_key or api_key != expected_key:
+def extract_raw_api_key(request: Request) -> Optional[str]:
+    """Extracts raw API key from Authorization: Bearer, access_token, or x-api-key."""
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        parts = auth_header.strip().split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+        if len(parts) == 1:
+            return parts[0].strip()
+
+    legacy_token = request.headers.get("access_token")
+    if legacy_token:
+        return legacy_token.strip()
+
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return x_api_key.strip()
+
+    return None
+
+
+async def get_api_key(request: Request) -> ApiKeyContext:
+    """
+    Primary API key dependency for Sprint 2.
+    - Extracts token from Authorization: Bearer <key> or legacy access_token.
+    - Evaluates pre-auth IP brute-force throttle (10 failures/min/IP).
+    - Authenticates key against database with HMAC-SHA256 and constant-time check.
+    - Evaluates dynamic per-key rate limit based on DB row.
+    - Returns ApiKeyContext.
+    """
+    client_ip = rate_limiter.extract_client_ip(request)
+
+    # 1. Pre-auth brute-force lockout check
+    is_locked, _, retry_after = await rate_limiter.check_auth_failure_rate(client_ip)
+    if is_locked:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid or missing API key"
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": {"code": "auth_throttled", "message": "Too many failed authentication attempts. Try again later."}},
+            headers={"Retry-After": str(retry_after)}
         )
 
-    # Rate check supporting distributed Redis, in-memory fallback, and test mock patching
-    rate_res = rate_limiter.is_rate_limited(api_key)
+    raw_key = extract_raw_api_key(request)
+    if not raw_key:
+        await rate_limiter.record_auth_failure(client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": {"code": "unauthorized", "message": "Invalid or missing API key."}},
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    # 2. Support legacy test environment MY_API_KEY if configured
+    legacy_env_key = os.getenv("MY_API_KEY")
+    is_legacy_key = False
+    if legacy_env_key and hmac.compare_digest(raw_key.strip(), legacy_env_key.strip()):
+        is_legacy_key = True
+        key_ctx = ApiKeyContext(
+            key_id=None,
+            name="legacy_env_key",
+            owner_id=None,
+            role="user",
+            scopes=["recommend", "chat"],
+            rate_limit_per_min=rate_limiter.requests_per_min,
+            expires_at=None,
+            revoked_at=None,
+            key_prefix="legacy_env"
+        )
+    else:
+        try:
+            key_ctx = await authenticate_api_key(
+                raw_key=raw_key,
+                client_ip=client_ip,
+                endpoint=request.url.path,
+                redis_client=rate_limiter.redis
+            )
+        except RuntimeError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": {"code": "database_unavailable", "message": "Authentication service unavailable."}}
+            )
+        except Exception:
+            await rate_limiter.record_auth_failure(client_ip)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": "unauthorized", "message": "Invalid or missing API key."}},
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+    # 3. Dynamic per-key rate limit (supporting distributed Redis, in-memory fallback, and test mock patching)
+    key_identifier = raw_key if is_legacy_key else (key_ctx.key_id or key_ctx.name)
+    effective_limit = None if is_legacy_key else key_ctx.rate_limit_per_min
+    try:
+        if effective_limit is None:
+            rate_res = rate_limiter.is_rate_limited(key_identifier)
+        else:
+            rate_res = rate_limiter.is_rate_limited(key_identifier, limit=effective_limit)
+    except TypeError:
+        rate_res = rate_limiter.is_rate_limited(key_identifier)
+
     if hasattr(rate_res, "__await__"):
         rate_res = await rate_res
 
@@ -52,16 +224,26 @@ async def get_api_key(
     if is_limited:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Try again later.",
+            detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
             headers={
                 "Retry-After": str(retry_after),
-                "X-RateLimit-Limit": str(rate_limiter.requests_per_min),
+                "X-RateLimit-Limit": str(key_ctx.rate_limit_per_min),
                 "X-RateLimit-Remaining": "0",
                 "X-RateLimit-Reset": str(retry_after),
             }
         )
 
-    return api_key
+    return key_ctx
+
+
+async def get_admin_key(key_ctx: ApiKeyContext = Depends(get_api_key)) -> ApiKeyContext:
+    """Requires role == 'admin'."""
+    if key_ctx.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": {"code": "forbidden", "message": "Administrator privileges required."}}
+        )
+    return key_ctx
 
 
 # ----------------------
@@ -102,13 +284,44 @@ async def root():
 @app.post("/recommend", response_model=RecommendResponse)
 async def recommend(
     request: RecommendRequest,
-    api_key: str = Depends(get_api_key)
+    api_key: ApiKeyContext = Depends(get_api_key)
 ):
     valid, err_msg = DomainGuardrails.validate_intent(request.query)
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=err_msg
+            detail={"error": {"code": "bad_request", "message": err_msg}}
+        )
+
+    results, timings = await async_rag_pipeline(
+        query=request.query,
+        top_k=request.top_k,
+        allow_adult=request.allow_adult
+    )
+
+    return RecommendResponse(
+        query=request.query,
+        count=len(results),
+        allowed_adult=request.allow_adult,
+        results=results,
+        extra={
+            "timings": timings,
+            "total_ms": sum(timings.values())
+        }
+    )
+
+
+@app.post("/admin/recommend", response_model=RecommendResponse)
+async def admin_recommend(
+    request: RecommendRequest,
+    api_key: ApiKeyContext = Depends(get_admin_key)
+):
+    """Administrative evaluation endpoint requiring admin-role API key."""
+    valid, err_msg = DomainGuardrails.validate_intent(request.query)
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": {"code": "bad_request", "message": err_msg}}
         )
 
     results, timings = await async_rag_pipeline(
@@ -133,14 +346,11 @@ async def recommend(
 async def chat_endpoint(
     request: ChatRequest,
     raw_request: Request,
-    api_key: str = Depends(get_api_key),
+    api_key: ApiKeyContext = Depends(get_api_key),
 ):
     """
     Conversational SSE streaming endpoint (Sprint 3 & Sprint 4).
-    Dual-stream protocol with multi-turn Upstash Redis state tracking:
-    1. Immediate Metadata Cards with session_id (TTFT < 1.5s)
-    2. Streaming Taste Concierge Personal Rationale with multi-turn history
-    3. Automatic candidate ID exclusion recording to prevent title recurrence
+    Dual-stream protocol with multi-turn Upstash Redis state tracking.
     """
     seen_ids_set = set(request.seen_ids) if request.seen_ids else None
     assigned_session_id = request.session_id or str(uuid.uuid4())

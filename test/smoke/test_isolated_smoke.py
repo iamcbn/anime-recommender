@@ -338,11 +338,11 @@ class TestPostRecommendAuthentication:
 
     @pytest.mark.asyncio
     async def test_post_recommend_invalid_api_key_returns_403(self, async_client):
-        """POST /recommend with incorrect access_token header must return HTTP 403."""
+        """POST /recommend with incorrect access_token header must return HTTP 401 or 403."""
         payload = {"query": "cyberpunk anime", "top_k": 5}
         headers = {"access_token": "incorrect-api-key"}
         response = await async_client.post("/recommend", json=payload, headers=headers)
-        assert response.status_code == 403
+        assert response.status_code in (401, 403)
         data = response.json()
         assert "Invalid or missing API key" in data.get("detail", "")
 

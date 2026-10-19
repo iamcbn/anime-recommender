@@ -19,12 +19,15 @@ from typing import Optional, Generator
 import psycopg2
 from psycopg2 import pool, extensions
 
-from backend.rag_pipeline.config import config as get_db_config
-
 logger = logging.getLogger("anime_recommender.telemetry.db")
 
 _TELEMETRY_DB_POOL: Optional[pool.ThreadedConnectionPool] = None
 _POOL_LOCK = threading.Lock()
+
+
+def _get_base_db_config() -> dict:
+    from backend.rag_pipeline.config import config as get_db_config
+    return get_db_config()
 
 
 def get_telemetry_db_pool() -> pool.ThreadedConnectionPool:
@@ -36,7 +39,7 @@ def get_telemetry_db_pool() -> pool.ThreadedConnectionPool:
     if _TELEMETRY_DB_POOL is None or _TELEMETRY_DB_POOL.closed:
         with _POOL_LOCK:
             if _TELEMETRY_DB_POOL is None or _TELEMETRY_DB_POOL.closed:
-                cfg = get_db_config()
+                cfg = _get_base_db_config()
                 pool_kwargs = dict(cfg)
                 pool_kwargs["connect_timeout"] = int(os.getenv("DB_TELEMETRY_CONNECT_TIMEOUT", "3"))
                 pool_kwargs["options"] = os.getenv(

@@ -1,6 +1,7 @@
-# Minimal dependencies for GitHub Actions monthly Parquet archival
-# Avoids installing ~3 GB of CUDA/PyTorch dependencies in CI runners
-pyarrow>=19.0.0
-supabase>=2.13.0
-psycopg2-binary>=2.9.11
-tenacity>=9.1.2
+# Pinned minimal dependencies for GitHub Actions monthly Parquet archival (Sprint 4 & 5).
+# Do NOT install root requirements.txt in the archive workflow (it pulls ~3 GB of CUDA/PyTorch).
+pyarrow==19.0.1
+supabase==2.13.0
+psycopg2-binary==2.9.11
+tenacity==9.1.2
+python-dotenv==1.2.1

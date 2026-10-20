@@ -13,13 +13,41 @@ on:
         type: boolean
         default: true
 
+concurrency:
+  group: data-pipeline
+  cancel-in-progress: false
+
 jobs:
   update-database:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Keep-Alive Dependencies
+        run: |
+          pip install psycopg2-binary python-dotenv
+
+      - name: Database Keep-Alive & Pre-Flight Check
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_SSLMODE: 'require'
+        run: |
+          python scripts/db_keepalive.py --timeout 5
 
       - name: Build Data Pipeline Docker Image
         run: |
@@ -29,6 +57,15 @@ jobs:
           docker build -t anime-data-pipeline -f backend/data_pipeline/Dockerfile .
 
       - name: Run Data Pipeline
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p ${{ github.workspace }}/artefacts
           mkdir -p ${{ github.workspace }}/models
@@ -39,14 +76,14 @@ jobs:
           fi
 
           docker run --rm \
-            -e DB_HOST=${{ secrets.DB_HOST }} \
-            -e DB_PORT=${{ secrets.DB_PORT }} \
-            -e DB_NAME=${{ secrets.DB_NAME }} \
-            -e DB_USER=${{ secrets.DB_USER }} \
-            -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
-            -e KAGGLE_USERNAME=${{ secrets.KAGGLE_USERNAME }} \
-            -e KAGGLE_KEY=${{ secrets.KAGGLE_KEY }} \
-            -e HF_TOKEN=${{ secrets.HF_TOKEN }} \
+            -e DB_HOST \
+            -e DB_PORT \
+            -e DB_NAME \
+            -e DB_USER \
+            -e DB_PASSWORD \
+            -e KAGGLE_USERNAME \
+            -e KAGGLE_KEY \
+            -e HF_TOKEN \
             -v ${{ github.workspace }}/artefacts:/app/data_pipeline/artefacts \
             -v ${{ github.workspace }}/models:/app/models \
             anime-data-pipeline python -m data_pipeline.run_pipeline $FORCE_FLAG
@@ -58,6 +95,9 @@ jobs:
           sudo chmod -R u+rwX,go+rX ${{ github.workspace }}/models ${{ github.workspace }}/artefacts
 
       - name: Upload Models to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           if [ -z "$(ls -A ${{ github.workspace }}/models)" ]; then
             echo "No new models generated; skipping upload to Modal."
@@ -65,7 +105,7 @@ jobs:
           fi
 
           pip install modal
-          modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
+          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
           
           # Create the volume explicitly using the Modal Python API to ensure it exists
           python -c "import modal; modal.Volume.from_name('anime-models-vol', create_if_missing=True).hydrate()"

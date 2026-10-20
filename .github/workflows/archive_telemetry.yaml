@@ -1,0 +1,94 @@
+name: Monthly Telemetry Parquet Archival
+
+on:
+  schedule:
+    # Run automatically at 3:00 AM UTC on the 1st of every month
+    - cron: '0 3 1 * *'
+
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Retention window in days (default: 30)'
+        required: false
+        default: '30'
+        type: string
+      dry_run:
+        description: 'Dry run (scan and measure without upload or delete)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+jobs:
+  archive-telemetry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Archival Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-archive.txt
+
+      - name: Run Telemetry Archiver
+        id: run_archiver
+        env:
+          ARCHIVER_DB_HOST: ${{ secrets.ARCHIVER_DB_HOST || secrets.DB_HOST }}
+          ARCHIVER_DB_PORT: '5432'
+          ARCHIVER_DB_NAME: ${{ secrets.ARCHIVER_DB_NAME || secrets.DB_NAME }}
+          ARCHIVER_DB_USER: ${{ secrets.ARCHIVER_DB_USER || 'telemetry_archiver' }}
+          ARCHIVER_DB_PASSWORD: ${{ secrets.ARCHIVER_DB_PASSWORD || secrets.DB_PASSWORD }}
+          ARCHIVER_DB_SSLMODE: 'require'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          KEY_PEPPER: ${{ secrets.KEY_PEPPER }}
+          INPUT_DAYS: ${{ github.event.inputs.days || '30' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          ARGS="--days $INPUT_DAYS --summary-file archive_summary.json --manifest-file archive_manifest.json"
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python -m backend.telemetry.archiver $ARGS
+
+      - name: Upload Archival Summary & Manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telemetry-archive-run-${{ github.run_id }}
+          path: |
+            archive_summary.json
+            archive_manifest.json
+          retention-days: 90
+
+      - name: Dispatch Failure Alert
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.TELEMETRY_ALERT_WEBHOOK_URL || secrets.ALERT_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+        run: |
+          python scripts/alert_dispatcher.py \
+            --status failure \
+            --workflow "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --summary-file archive_summary.json

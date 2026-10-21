@@ -196,6 +196,9 @@ class TestFrontendStaticAndContract:
             "src/lib/apiClient.ts",
             "src/context/AuthContext.tsx",
             "src/routes/LoginPage.tsx",
+            "src/routes/SignUpPage.tsx",
+            "src/routes/TermsPage.tsx",
+            "src/routes/PrivacyPage.tsx",
             "src/routes/DevelopersPage.tsx",
             "src/routes/AdminTelemetryPage.tsx",
             "src/routes/DocsPage.tsx",
@@ -819,3 +822,49 @@ class TestDocumentationAndCodeSamplesContract:
         assert "Stripped of internal" not in docs_code
         assert "/admin/recommend" not in err_code
         assert "Sprint 6" not in footer_code
+
+    def test_auth_pages_and_legal_links_contract(self):
+        """Verifies decoupled /login and /signup pages and legal links on /signup and footer."""
+        login_path = os.path.join(ROOT_DIR, "frontend", "src", "routes", "LoginPage.tsx")
+        signup_path = os.path.join(ROOT_DIR, "frontend", "src", "routes", "SignUpPage.tsx")
+        terms_path = os.path.join(ROOT_DIR, "frontend", "src", "routes", "TermsPage.tsx")
+        privacy_path = os.path.join(ROOT_DIR, "frontend", "src", "routes", "PrivacyPage.tsx")
+        footer_path = os.path.join(ROOT_DIR, "frontend", "src", "components", "layout", "Footer.tsx")
+        navbar_path = os.path.join(ROOT_DIR, "frontend", "src", "components", "layout", "Navbar.tsx")
+
+        with open(login_path, "r", encoding="utf-8") as f:
+            login_code = f.read()
+        with open(signup_path, "r", encoding="utf-8") as f:
+            signup_code = f.read()
+        with open(terms_path, "r", encoding="utf-8") as f:
+            terms_code = f.read()
+        with open(privacy_path, "r", encoding="utf-8") as f:
+            privacy_code = f.read()
+        with open(footer_path, "r", encoding="utf-8") as f:
+            footer_code = f.read()
+        with open(navbar_path, "r", encoding="utf-8") as f:
+            navbar_code = f.read()
+
+        # Login page links to /signup and has removed the mixed 'signup' tab mode
+        assert "/signup" in login_code
+        assert "mode === 'signup'" not in login_code
+
+        # Signup page links to /terms, /privacy, and /login
+        assert "/terms" in signup_code
+        assert "/privacy" in signup_code
+        assert "/login" in signup_code
+
+        # Footer links to /terms and /privacy
+        assert "/terms" in footer_code
+        assert "/privacy" in footer_code
+
+        # Navbar has separate Log in and Sign up links
+        assert "/login" in navbar_code
+        assert "/signup" in navbar_code
+
+        # Legal pages have expected title headers and privacy jurisdiction references
+        assert "Terms of Service" in terms_code
+        assert "Privacy Policy" in privacy_code
+        assert "Nigeria Data Protection Act" in privacy_code or "NDPA" in privacy_code
+        assert "GDPR" in privacy_code
+        assert "CCPA" not in privacy_code

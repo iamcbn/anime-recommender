@@ -7,6 +7,9 @@ import { RootLayout } from './components/layout/RootLayout';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 import { AdminRoute } from './routes/AdminRoute';
 import { LoginPage } from './routes/LoginPage';
+import { SignUpPage } from './routes/SignUpPage';
+import { TermsPage } from './routes/TermsPage';
+import { PrivacyPage } from './routes/PrivacyPage';
 import { DevelopersPage } from './routes/DevelopersPage';
 import { AdminTelemetryPage } from './routes/AdminTelemetryPage';
 import { DocsPage } from './routes/DocsPage';
@@ -25,6 +28,9 @@ export const App: React.FC = () => {
               {/* Public Routes */}
               <Route path="docs" element={<DocsPage />} />
               <Route path="login" element={<LoginPage />} />
+              <Route path="signup" element={<SignUpPage />} />
+              <Route path="terms" element={<TermsPage />} />
+              <Route path="privacy" element={<PrivacyPage />} />
 
               {/* Protected Routes (Authenticated Developer) */}
               <Route element={<ProtectedRoute />}>

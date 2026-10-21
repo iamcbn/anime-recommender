@@ -20,6 +20,12 @@ export const Footer: React.FC = () => {
           <Link to="/developers" className="hover:text-slate-900 dark:hover:text-slate-300 transition-colors">
             API Keys
           </Link>
+          <Link to="/terms" className="hover:text-slate-900 dark:hover:text-slate-300 transition-colors">
+            Terms
+          </Link>
+          <Link to="/privacy" className="hover:text-slate-900 dark:hover:text-slate-300 transition-colors">
+            Privacy
+          </Link>
         </div>
       </div>
     </footer>

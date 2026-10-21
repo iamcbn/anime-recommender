@@ -85,13 +85,20 @@ export const Navbar: React.FC = () => {
               </button>
             </div>
           ) : (
-            <Link
-              to="/login"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:hover:bg-slate-200 dark:text-slate-950 transition-colors"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Sign in</span>
-            </Link>
+            <div className="flex items-center gap-1.5">
+              <Link
+                to="/login"
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-800 transition-colors"
+              >
+                Log in
+              </Link>
+              <Link
+                to="/signup"
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:hover:bg-slate-200 dark:text-slate-950 transition-colors shadow-xs"
+              >
+                Sign up
+              </Link>
+            </div>
           )}
         </div>
       </div>

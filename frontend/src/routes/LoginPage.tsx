@@ -6,11 +6,11 @@ import { useAuth } from '../hooks/useAuth';
 import { Button } from '../components/common/Button';
 
 export const LoginPage: React.FC = () => {
-  const { session, signInWithMagicLink, signInWithPassword, signUpWithPassword, signInWithGitHub } = useAuth();
+  const { session, signInWithMagicLink, signInWithPassword, signInWithGitHub } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [mode, setMode] = useState<'magic_link' | 'password' | 'signup'>('magic_link');
+  const [mode, setMode] = useState<'magic_link' | 'password'>('magic_link');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -39,10 +39,6 @@ export const LoginPage: React.FC = () => {
         const { error } = await signInWithPassword(email.trim(), password);
         if (error) throw error;
         navigate(destination, { replace: true });
-      } else if (mode === 'signup') {
-        const { error } = await signUpWithPassword(email.trim(), password);
-        if (error) throw error;
-        setErrorMsg('Account created. Check your email to confirm your address.');
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Authentication failed';
@@ -95,7 +91,7 @@ export const LoginPage: React.FC = () => {
           </span>
         </div>
 
-        {/* Tab Selection */}
+        {/* Tab Selection: Sign In Methods */}
         <div className="flex rounded-md bg-slate-100 dark:bg-dark-950 p-1 mb-6 border border-slate-200 dark:border-dark-800 text-xs font-medium">
           <button
             type="button"
@@ -126,21 +122,6 @@ export const LoginPage: React.FC = () => {
             }`}
           >
             Password
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode('signup');
-              setErrorMsg(null);
-              setMagicLinkSent(false);
-            }}
-            className={`flex-1 py-1.5 rounded transition-colors ${
-              mode === 'signup'
-                ? 'bg-white dark:bg-dark-800 text-slate-900 dark:text-white shadow-sm'
-                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
-            }`}
-          >
-            Sign Up
           </button>
         </div>
 
@@ -214,19 +195,21 @@ export const LoginPage: React.FC = () => {
               className="w-full mt-1 py-2 justify-center"
               icon={<ArrowRight className="w-4 h-4" />}
             >
-              {mode === 'magic_link'
-                ? 'Send sign-in link'
-                : mode === 'password'
-                ? 'Sign in'
-                : 'Create account'}
+              {mode === 'magic_link' ? 'Send sign-in link' : 'Sign in'}
             </Button>
           </form>
         )}
       </div>
 
-      <div className="mt-5">
-        <Link to="/docs" className="text-xs text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors">
-          Read API documentation &rarr;
+      <div className="mt-5 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+        <span>
+          Don&apos;t have an account yet?{' '}
+          <Link to="/signup" className="font-medium text-slate-900 dark:text-white underline">
+            Sign up
+          </Link>
+        </span>
+        <Link to="/docs" className="hover:text-slate-800 dark:hover:text-white transition-colors">
+          Documentation &rarr;
         </Link>
       </div>
     </div>

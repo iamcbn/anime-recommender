@@ -495,7 +495,7 @@ async def recommend(
     )
 
 
-@app.post("/admin/recommend", response_model=RecommendResponse)
+@app.post("/admin/recommend", response_model=RecommendResponse, include_in_schema=False)
 async def admin_recommend(
     request: RecommendRequest,
     raw_request: Request,
@@ -528,7 +528,7 @@ async def admin_recommend(
     )
 
 
-@app.post("/chat")
+@app.post("/chat", include_in_schema=False)
 async def chat_endpoint(
     request: ChatRequest,
     raw_request: Request,

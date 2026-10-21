@@ -81,13 +81,13 @@ fetchRecommendations("dark fantasy with intricate magic system")
   .catch((err) => console.error(err));`;
 
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-dark-800 bg-white dark:bg-dark-900 overflow-hidden shadow-sm transition-colors">
-      <div className="flex items-center gap-1 p-2 bg-slate-50 dark:bg-dark-950 border-b border-slate-200 dark:border-dark-800">
+    <div className="rounded-lg border border-slate-200 dark:border-dark-800 bg-white dark:bg-dark-900 overflow-hidden transition-colors">
+      <div className="flex items-center gap-1 p-1.5 bg-slate-50 dark:bg-dark-950 border-b border-slate-200 dark:border-dark-800">
         <button
           onClick={() => setActiveTab('curl')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
             activeTab === 'curl'
-              ? 'bg-brand text-white font-semibold'
+              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-white dark:hover:bg-dark-800'
           }`}
         >
@@ -95,23 +95,23 @@ fetchRecommendations("dark fantasy with intricate magic system")
         </button>
         <button
           onClick={() => setActiveTab('python')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
             activeTab === 'python'
-              ? 'bg-brand text-white font-semibold'
+              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-white dark:hover:bg-dark-800'
           }`}
         >
-          Python (requests)
+          Python
         </button>
         <button
           onClick={() => setActiveTab('js')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
             activeTab === 'js'
-              ? 'bg-brand text-white font-semibold'
+              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-white dark:hover:bg-dark-800'
           }`}
         >
-          Node.js / TypeScript
+          Node.js
         </button>
       </div>
 

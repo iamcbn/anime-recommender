@@ -158,7 +158,7 @@ def generate_api_key(
     if expires_in_days is not None:
         expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
 
-    resolved_scopes = scopes or ["recommend", "chat"]
+    resolved_scopes = scopes or (["admin", "recommend", "chat"] if role == "admin" else ["recommend"])
     resolved_actor = actor or (f"user:{owner_id}" if owner_id else "system")
 
     should_close_conn = False

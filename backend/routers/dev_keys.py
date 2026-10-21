@@ -136,7 +136,7 @@ async def create_key(
             name=body.name.strip(),
             owner_id=current_dev.user_id,
             role="user",
-            scopes=["recommend", "chat"],
+            scopes=["recommend"],
             rate_limit_per_min=20,
             expires_in_days=90,
             actor=f"user:{current_dev.user_id}",

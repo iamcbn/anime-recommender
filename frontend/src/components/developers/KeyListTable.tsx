@@ -1,6 +1,6 @@
 // frontend/src/components/developers/KeyListTable.tsx
 import React from 'react';
-import { Trash2, Clock, AlertOctagon } from 'lucide-react';
+import { Trash2, Clock } from 'lucide-react';
 import type { KeyItem } from '../../types/apiKeys';
 import { Badge } from '../common/Badge';
 import { Button } from '../common/Button';
@@ -41,37 +41,34 @@ export const KeyListTable: React.FC<KeyListTableProps> = ({
   if (isLoading && keys.length === 0) {
     return (
       <div className="w-full py-12 flex flex-col items-center justify-center text-slate-500 dark:text-slate-400 gap-3">
-        <Clock className="w-6 h-6 animate-spin text-brand" />
-        <span className="text-sm">Loading your developer keys...</span>
+        <Clock className="w-5 h-5 animate-spin text-slate-400" />
+        <span className="text-xs">Loading keys...</span>
       </div>
     );
   }
 
   if (keys.length === 0) {
     return (
-      <div className="w-full py-16 flex flex-col items-center justify-center text-center p-6 bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-800 rounded-xl shadow-sm">
-        <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-dark-800 flex items-center justify-center text-slate-400 mb-3">
-          <AlertOctagon className="w-6 h-6" />
-        </div>
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white">No API Keys Yet</h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mt-1 mb-4">
-          Generate an API key to access the Anime Recommender recommendation and semantic search endpoints.
+      <div className="w-full py-12 flex flex-col items-center justify-center text-center p-6 bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-800 rounded-lg">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">No API keys created yet</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mt-1">
+          Click Create API Key above to generate your first token.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="w-full overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-800 bg-white dark:bg-dark-900 shadow-sm">
+    <div className="w-full overflow-x-auto rounded-lg border border-slate-200 dark:border-dark-800 bg-white dark:bg-dark-900">
       <table className="w-full text-left text-sm text-slate-700 dark:text-slate-300">
-        <thead className="bg-slate-50 dark:bg-dark-950 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-200 dark:border-dark-800">
+        <thead className="bg-slate-50 dark:bg-dark-950 text-xs font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-dark-800">
           <tr>
-            <th className="px-5 py-3.5">Name</th>
-            <th className="px-5 py-3.5">Key Prefix</th>
-            <th className="px-5 py-3.5">Created</th>
-            <th className="px-5 py-3.5">Last Used</th>
-            <th className="px-5 py-3.5">Status</th>
-            <th className="px-5 py-3.5 text-right">Actions</th>
+            <th className="px-4 py-3">Name</th>
+            <th className="px-4 py-3">Key Prefix</th>
+            <th className="px-4 py-3">Created</th>
+            <th className="px-4 py-3">Last Used</th>
+            <th className="px-4 py-3">Status</th>
+            <th className="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200 dark:divide-dark-800 text-xs">
@@ -81,21 +78,21 @@ export const KeyListTable: React.FC<KeyListTableProps> = ({
 
             return (
               <tr key={k.id} className="hover:bg-slate-50 dark:hover:bg-dark-800/50 transition-colors">
-                <td className="px-5 py-4 font-medium text-slate-900 dark:text-white max-w-[200px] truncate">
+                <td className="px-4 py-3.5 font-medium text-slate-900 dark:text-white max-w-[200px] truncate">
                   {k.name}
                 </td>
-                <td className="px-5 py-4 font-mono text-slate-500 dark:text-slate-400">
-                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">{k.prefix}</span>
-                  <span className="opacity-40">••••••••••••••••</span>
+                <td className="px-4 py-3.5 font-mono text-slate-500 dark:text-slate-400">
+                  <span className="text-slate-800 dark:text-slate-200">{k.prefix}</span>
+                  <span className="opacity-40">••••••••</span>
                 </td>
-                <td className="px-5 py-4 text-slate-500 dark:text-slate-400">{formatDate(k.created_at)}</td>
-                <td className="px-5 py-4 text-slate-500 dark:text-slate-400">{formatDate(k.last_used_at)}</td>
-                <td className="px-5 py-4">
+                <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{formatDate(k.created_at)}</td>
+                <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{formatDate(k.last_used_at)}</td>
+                <td className="px-4 py-3.5">
                   <Badge variant={status.variant} size="sm">
                     {status.label}
                   </Badge>
                 </td>
-                <td className="px-5 py-4 text-right">
+                <td className="px-4 py-3.5 text-right">
                   {!isInactive ? (
                     <Button
                       variant="ghost"
@@ -108,7 +105,7 @@ export const KeyListTable: React.FC<KeyListTableProps> = ({
                       Revoke
                     </Button>
                   ) : (
-                    <span className="text-xs text-slate-400 dark:text-slate-600 italic">No actions</span>
+                    <span className="text-xs text-slate-400 dark:text-slate-600">—</span>
                   )}
                 </td>
               </tr>

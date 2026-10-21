@@ -329,7 +329,7 @@ class TestDevPortalApiContract:
         )
 
         with patch("backend.routers.dev_keys.get_auth_db_pool") as mock_get_pool, \
-             patch("backend.routers.dev_keys.generate_api_key", return_value=mock_gen_return), \
+             patch("backend.routers.dev_keys.generate_api_key", return_value=mock_gen_return) as mock_gen_key, \
              patch("backend.routers.dev_keys.rate_limiter.check_rate_limit", return_value=(False, 10, 0)):
             mock_pool = MagicMock()
             mock_pool.getconn.return_value = mock_conn
@@ -340,6 +340,7 @@ class TestDevPortalApiContract:
                 headers={"Authorization": f"Bearer {jwt_token}"},
                 json={"name": "test-analytics-key"}
             )
+            assert mock_gen_key.call_args.kwargs.get("scopes") == ["recommend"]
 
         assert response.status_code == 201
         data = response.json()
@@ -492,7 +493,7 @@ class TestKeyLifecycleAndRevocationLag:
             name="test_dev_key",
             owner_id=str(uuid.uuid4()),
             role="user",
-            scopes=["recommend", "chat"],
+            scopes=["recommend"],
             rate_limit_per_min=20,
             expires_at=None,
             revoked_at=None,
@@ -512,7 +513,7 @@ class TestKeyLifecycleAndRevocationLag:
         ]
         mock_timings = {"embedding_ms": 20.0, "retrieval_ms": 30.0, "reranking_ms": 40.0, "total_ms": 90.0}
 
-        # 1. Valid active key call to /recommend
+        # 1. Valid active key call to /recommend (200), blocked on /chat (403) and /admin/recommend (403)
         with patch("backend.main.authenticate_api_key", return_value=key_ctx), \
              patch("backend.main.async_rag_pipeline", return_value=(mock_results, mock_timings)), \
              patch("backend.main.rate_limiter.check_rate_limit", return_value=(False, 20, 0)), \
@@ -523,8 +524,24 @@ class TestKeyLifecycleAndRevocationLag:
                 headers={"Authorization": f"Bearer {raw_key}"},
                 json={"query": "mecha anime", "top_k": 5}
             )
+            chat_resp = client.post(
+                "/chat",
+                headers={"Authorization": f"Bearer {raw_key}"},
+                json={"query": "mecha anime", "top_k": 5}
+            )
+            admin_resp = client.post(
+                "/admin/recommend",
+                headers={"Authorization": f"Bearer {raw_key}"},
+                json={"query": "mecha anime", "top_k": 5}
+            )
 
         assert response.status_code == 200
+        assert chat_resp.status_code == 403
+        assert admin_resp.status_code == 403
+        openapi_paths = client.get("/openapi.json").json().get("paths", {})
+        assert "/recommend" in openapi_paths
+        assert "/chat" not in openapi_paths
+        assert "/admin/recommend" not in openapi_paths
         data = response.json()
         assert "results" in data
         assert len(data["results"]) == 1
@@ -783,3 +800,22 @@ class TestDocumentationAndCodeSamplesContract:
         assert "Generate New Key" in rot_code
         assert "Revoke Old Key" in rot_code
         assert "60" in rot_code, "Rotation guide must mention <= 60s cache eviction lag"
+
+    def test_public_docs_and_footer_no_internal_leaks(self):
+        """Verifies public developer docs and footer do not expose internal/admin routes or sprint metadata."""
+        docs_path = os.path.join(ROOT_DIR, "frontend", "src", "routes", "DocsPage.tsx")
+        err_path = os.path.join(ROOT_DIR, "frontend", "src", "components", "docs", "ErrorCatalog.tsx")
+        footer_path = os.path.join(ROOT_DIR, "frontend", "src", "components", "layout", "Footer.tsx")
+
+        with open(docs_path, "r", encoding="utf-8") as f:
+            docs_code = f.read()
+        with open(err_path, "r", encoding="utf-8") as f:
+            err_code = f.read()
+        with open(footer_path, "r", encoding="utf-8") as f:
+            footer_code = f.read()
+
+        assert "/chat" not in docs_code
+        assert "/admin/recommend" not in docs_code
+        assert "Stripped of internal" not in docs_code
+        assert "/admin/recommend" not in err_code
+        assert "Sprint 6" not in footer_code

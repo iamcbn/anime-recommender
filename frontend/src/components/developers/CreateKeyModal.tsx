@@ -79,11 +79,11 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
-      title={createdKeyData ? 'Save Your API Key' : 'Create New API Key'}
+      title={createdKeyData ? 'Save Your API Key' : 'Create API Key'}
       description={
         createdKeyData
-          ? 'Make sure to copy your API key now. You will not be able to see it again!'
-          : 'Create a new high-entropy Bearer token for accessing recommendation endpoints.'
+          ? 'Copy this key now and store it in your server environment. It will not be shown again.'
+          : 'Enter a name to identify this key in your account.'
       }
       locked={Boolean(createdKeyData && !hasAcknowledged)}
       maxWidth="md"

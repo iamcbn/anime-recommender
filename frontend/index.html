@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anime Recommender | Developer & Admin Portal</title>
+    <meta name="description" content="Self-service API keys, developer documentation, and real-time telemetry analytics for Anime Recommender." />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      // Immediately evaluate user or device theme preference to prevent FOUC
+      (function() {
+        try {
+          var stored = localStorage.getItem('theme');
+          var storedSystem = localStorage.getItem('theme_system');
+          var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var currentSystem = systemDark ? 'dark' : 'light';
+
+          // If system preference changed since manual override was set, device setting takes priority
+          if (stored && storedSystem && storedSystem !== currentSystem) {
+            localStorage.removeItem('theme');
+            localStorage.removeItem('theme_system');
+            stored = null;
+          }
+
+          if (stored === 'dark' || (!stored && systemDark)) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 dark:bg-dark-950 text-slate-900 dark:text-slate-100 min-h-screen selection:bg-brand selection:text-white antialiased transition-colors duration-150">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

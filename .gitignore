@@ -2,6 +2,10 @@ misc/
 backend/models
 backend/data_pipeline/artefacts
 
+# Node & Frontend
+node_modules/
+dist/
+
 # Virtual Environment
 anime/
 .venv/

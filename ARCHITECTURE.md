@@ -869,3 +869,49 @@ Each request to `/recommend` or `/chat` generates granular timing spans:
 2. **State & Rate Limiting (Upstash):** Serverless HTTP/REST Redis instance with zero TCP connection management overhead.
 3. **API & Neural Inference (Modal):** Deployed via [`modal_deploy.py`](file:///c:/Dev/anime_recommender/modal_deploy.py) decoupling the CPU Gateway (`@modal.asgi_app()`) from the GPU Model Worker Actor (`@app.cls(gpu="T4")`).
 4. **Data Sync CI/CD (GitHub Actions):** Fully automated weekly cron pipeline connecting directly to Supabase to ingest and sync the latest Kaggle anime datasets without manual intervention.
+
+---
+
+## Sprint 6: Frontend Developer & Admin Portal Architecture
+
+```
++--------------------------------------------------------------------------------------------------------------------+
+|                                    FRONTEND DEVELOPER & ADMIN PORTAL (frontend/)                                   |
++--------------------------------------------------------------------------------------------------------------------+
+|  * Framework: Vite 6 + React 18 + TypeScript (strict mode) + Tailwind CSS + Lucide Icons                           |
+|  * Client Security: Service-role keys, KEY_PEPPER, and ADMIN_API_KEY are STRICTLY PROHIBITED in frontend bundles.   |
+|  * Environment Config: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_BASE_URL                                |
+|  * Ephemeral Raw Keys: Displayed ONCE in CreateKeyModal with "I've saved it" gate; strictly zeroed on unmount.       |
+|  * Admin RBAC: Derived strictly from Supabase JWT claim: app_metadata.role === 'admin' (tamper-proof).             |
++--------------------------------------------------------------------------------------------------------------------+
+                                      |                                                    |
+            (1) Direct PostgREST (anon key + JWT)             (2) REST Calls (Bearer JWT)  |
+                                      v                                                    v
++-------------------------------------------------------------+    +-------------------------------------------------+
+| [ Supabase PostgREST Gateway ]                              |    | [ FastAPI Gateway (backend/main.py) ]           |
+| Schema: telemetry                                           |    | Router: /dev/keys                               |
+| * Table: telemetry.recommendation_logs                      |    | * Freshness Barrier: rejects tokens older       |
+| * RLS: (auth.jwt()->'app_metadata'->>'role') = 'admin'      |    |   than 15 minutes (stale_token -> 401).          |
+| * Anon / Non-admin: returns 0 rows (fail-safe)              |    | * Cache-Control: no-store                       |
+| * Table: telemetry.api_key_usage_daily (rollup)             |    | * Dynamic CORS & exception secret redaction     |
++-------------------------------------------------------------+    +-------------------------------------------------+
+```
+
+### 1. Developer Key Lifecycle Management
+- **Key Generation (`POST /dev/keys`)**:
+  - Authenticated developers sign up / log in via Supabase Auth (GitHub OAuth or Magic Link).
+  - The portal passes `Authorization: Bearer <Supabase JWT>` to the backend `/dev/keys` router.
+  - The backend validates the JWT against Supabase JWKS, verifies session freshness (`iat < 15 min`), and generates an `ar_live_<prefix>_<secret>` token.
+  - The secret is hashed with HMAC-SHA256 (`KEY_PEPPER`) and stored. The raw key is returned once in a `no-store` response.
+  - The frontend displays the raw key in a locked modal with copy confirmation and an acknowledgement checkbox gate, explicitly dropping the key from memory upon dismissal.
+- **Key Listing & Revocation (`GET /dev/keys`, `DELETE /dev/keys/{id}`)**:
+  - Lists prefix, creation time, last used time, expiry, and revocation status without exposing secrets or hashes.
+  - Soft revocation writes `revoked_at` to the database, evicts in-memory cache, and publishes a Redis tombstone (`revoked:{id}`) with <= 60s global convergence.
+
+### 2. Admin Telemetry & Direct PostgREST Query
+- The Admin Telemetry portal (`/admin/telemetry`) queries `supabase.schema('telemetry').from('recommendation_logs')` directly with client-side filters (source, endpoint, status, date range presets) and ordering (`created_at` DESC) with `limit <= 500`.
+- Access control is enforced cryptographically by PostgreSQL Row Level Security (RLS):
+  - `anon`: 0 rows returned.
+  - `authenticated` (developer role): 0 rows returned.
+  - `authenticated` (admin role in `app_metadata.role`): queries successfully return log records.
+- Service-role keys never reach the browser bundle.

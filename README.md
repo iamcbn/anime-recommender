@@ -19,19 +19,23 @@ Served through a FastAPI backend with API key authentication and rate limiting, 
 
 ## API Usage
 
-### Authentication
+### Authentication & Developer Portal
 
-All requests require an API key in the header:
+Developers can self-service manage high-entropy API keys at the **Developer Portal** (`frontend/`).
 
+All API requests authenticate via the HTTP Bearer header:
+
+```http
+Authorization: Bearer ar_live_a1b2c3d4_...
 ```
-access_token: <your_api_key>
-```
 
-Invalid or missing keys return `403 Forbidden`.
+*(Note: Legacy `access_token` header is accepted during deprecation).*
+- Missing, invalid, expired, or revoked keys return `401 Unauthorized`.
+- Non-admin callers attempting to access `/admin/*` endpoints return `403 Forbidden`.
 
 ### Rate Limiting
 
-20 requests per minute per API key. Exceeding this returns `429 Too Many Requests`.
+20 requests per minute per API key (with sliding-window Redis accounting). Exceeding this returns `429 Too Many Requests` with a `Retry-After` header.
 
 ### Endpoints
 
@@ -46,6 +50,8 @@ Health check.
 ```
 
 #### `POST /recommend`
+
+Public inference endpoint. Returns clean anime cards only (internal model scores, timings, and `extra` are strictly stripped from public responses and logged to asynchronous telemetry).
 
 **Request body:**
 
@@ -63,7 +69,7 @@ Health check.
 | `top_k` | int | No | 20 | Number of recommendations to return |
 | `allow_adult` | bool | No | false | Whether to include adult-rated anime |
 
-**Response:**
+**Response (Public):**
 
 ```json
 {
@@ -76,23 +82,49 @@ Health check.
       "title_romaji": "Dark Gathering",
       "title_userPreferred": "Dark Gathering",
       "title_english": "Dark Gathering",
-      "coverImage_large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx152802-ENRcnqD5axhQ.jpg",
-      "cross_encoder_score": -4.234375,
-      "cosine_similarity": 0.8154253363609314
+      "coverImage_large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx152802-ENRcnqD5axhQ.jpg"
     }
-  ],
-  "extra": {
-    "timings": {
-      "embedding_ms": 563.45,
-      "retrieval_ms": 338.23,
-      "reranking_ms": 794.48
-    },
-    "total_ms": 1696.16
-  }
+  ]
 }
 ```
 
-The `extra.timings` field breaks down latency per pipeline stage in milliseconds.
+#### `POST /admin/recommend`
+
+Evaluation and benchmarking endpoint. Requires an **admin-role** key (`role='admin'`). Returns the full response payload including pipeline timings (`total_ms`, stage breakdowns) and model scores (`cross_encoder_score`, `final_rrf_score`, `retrieval_rrf_score`).
+
+---
+
+## Developer & Admin Portal (`frontend/`)
+
+A modern, responsive developer portal built with Vite 6 + React 18 + TypeScript and styled with Tailwind CSS.
+
+### Key Features
+- **Developer Key Management (`/developers`)**:
+  - Authenticate with Supabase Auth (Email Magic Link, Password, or GitHub OAuth).
+  - Provision high-entropy API keys (`ar_live_<prefix>_<secret>`) with a secure single-reveal gated modal.
+  - Revoke keys with instant invalidation (<= 60s cache TTL).
+  - Maximum 5 active keys per developer account.
+- **Admin Telemetry Explorer (`/admin/telemetry`)**:
+  - Route-guarded with Row Level Security (RLS) enforcing `app_metadata.role = 'admin'`.
+  - Queries `telemetry.recommendation_logs` directly through PostgREST.
+  - Interactive filters by source (`user`, `admin_eval`), endpoint, status, date presets, and query search.
+  - Interactive JSON inspector for pipeline stage latencies and candidate scores.
+- **Interactive Documentation (`/docs`)**:
+  - Multi-language copy-paste code snippets (cURL, Python, Node.js).
+  - Status code error reference table (401, 403, 404, 409, 422, 429).
+  - Zero-downtime 4-step key rotation SOP.
+
+### Running the Frontend Locally
+
+```bash
+cd frontend
+cp .env.example .env
+# Edit .env with your VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+npm install
+npm run dev
+```
+
+The portal runs on `http://localhost:5173` and connects to the backend gateway at `http://localhost:8000`.
 
 ---
 

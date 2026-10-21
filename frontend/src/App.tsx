@@ -1,0 +1,49 @@
+// frontend/src/App.tsx
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { ThemeProvider } from './context/ThemeContext';
+import { AuthProvider } from './context/AuthContext';
+import { RootLayout } from './components/layout/RootLayout';
+import { ProtectedRoute } from './routes/ProtectedRoute';
+import { AdminRoute } from './routes/AdminRoute';
+import { LoginPage } from './routes/LoginPage';
+import { DevelopersPage } from './routes/DevelopersPage';
+import { AdminTelemetryPage } from './routes/AdminTelemetryPage';
+import { DocsPage } from './routes/DocsPage';
+import { NotFoundPage } from './routes/NotFoundPage';
+
+export const App: React.FC = () => {
+  return (
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<RootLayout />}>
+              {/* Default redirect to /docs */}
+              <Route index element={<Navigate to="/docs" replace />} />
+
+              {/* Public Routes */}
+              <Route path="docs" element={<DocsPage />} />
+              <Route path="login" element={<LoginPage />} />
+
+              {/* Protected Routes (Authenticated Developer) */}
+              <Route element={<ProtectedRoute />}>
+                <Route path="developers" element={<DevelopersPage />} />
+
+                {/* Admin-Only Protected Route (app_metadata.role === 'admin') */}
+                <Route element={<AdminRoute />}>
+                  <Route path="admin/telemetry" element={<AdminTelemetryPage />} />
+                </Route>
+              </Route>
+
+              {/* 404 Fallback */}
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
+  );
+};
+
+export default App;

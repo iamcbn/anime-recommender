@@ -30,3 +30,10 @@ __pycache__/
 NOTE_NON_IMPACTING_FILES.md
 archive/
 telemetry_and_archival_implementation_plan.md
+
+# Audit logs and agent guidance
+logs/
+CLAUDE.md
+AGENTS.md
+scripts/check_hygiene.py
+

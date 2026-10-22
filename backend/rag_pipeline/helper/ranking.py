@@ -19,6 +19,75 @@ cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 - HANDLES ROMANJI AND BETTER FOR SEAR
 cross-encoder-stsb-distilroberta-base - UNDERSTANDS SEMANTICS 
 """
 
+def filter_candidates_by_negative_constraints(
+    candidates: List[Dict[str, Any]],
+    avoid_genres: Optional[List[str]] = None,
+    avoid_tropes: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    In-memory post-filter removing candidate anime matching negative genre or trope constraints (Sprint 8).
+    Performs case-insensitive matching while keeping PostgreSQL vector search clean and unconstrained.
+    """
+    if not candidates:
+        return []
+
+    norm_avoid_genres = {
+        str(g).strip().lower() for g in (avoid_genres or []) if g and str(g).strip()
+    }
+    norm_avoid_tropes = {
+        str(t).strip().lower() for t in (avoid_tropes or []) if t and str(t).strip()
+    }
+
+    if not norm_avoid_genres and not norm_avoid_tropes:
+        return list(candidates)
+
+    def _extract_tokens(val: Any) -> Set[str]:
+        if not val:
+            return set()
+        if isinstance(val, (list, tuple, set)):
+            result = set()
+            for item in val:
+                if isinstance(item, dict) and "name" in item:
+                    result.add(str(item["name"]).strip().lower())
+                elif item:
+                    result.add(str(item).strip().lower())
+            return result
+        if isinstance(val, str):
+            val_s = val.strip()
+            if val_s.startswith("[") and val_s.endswith("]"):
+                try:
+                    parsed = json.loads(val_s)
+                    if isinstance(parsed, list):
+                        return _extract_tokens(parsed)
+                except Exception:
+                    pass
+            tokens = re.split(r"[,;]+", val_s)
+            return {t.strip().lower() for t in tokens if t.strip()}
+        return set()
+
+    filtered = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            filtered.append(candidate)
+            continue
+
+        genres = _extract_tokens(candidate.get("genres"))
+        if norm_avoid_genres and genres.intersection(norm_avoid_genres):
+            continue
+
+        if norm_avoid_tropes:
+            tags = _extract_tokens(candidate.get("tags"))
+            if tags.intersection(norm_avoid_tropes):
+                continue
+            desc = str(candidate.get("description") or "").lower()
+            if any(re.search(rf"\b{re.escape(trope)}\b", desc) for trope in norm_avoid_tropes):
+                continue
+
+        filtered.append(candidate)
+
+    return filtered
+
+
 class Ranker:
 
     DIR = Path(__file__).parents[2].resolve()
@@ -277,12 +346,15 @@ class Ranker:
         all_results: list,
         top_k: int,
         seen_ids: Optional[set[int]] = None,
-        include_metadata: bool = True
+        include_metadata: bool = True,
+        avoid_genres: Optional[List[str]] = None,
+        avoid_tropes: Optional[List[str]] = None,
     ) -> list:
         """
         Takes the flat pooled results from all retrieval searches, deduplicates,
         filters seen_ids in memory, reranks with the cross-encoder against the
         original user query, collapses franchises, and serialises to JSON.
+        Optionally applies in-memory negative genre/trope constraint filtering.
         """
         if not all_results:
             return []
@@ -296,7 +368,14 @@ class Ranker:
         output = self.collapse_franchises2(reranked_df=df, top_k=top_k)
         final_output = self.json_conversion(output, include_metadata=include_metadata)
 
+        if avoid_genres or avoid_tropes:
+            final_output = filter_candidates_by_negative_constraints(
+                final_output, avoid_genres=avoid_genres, avoid_tropes=avoid_tropes
+            )
+
         return final_output
+
+    filter_candidates_by_negative_constraints = staticmethod(filter_candidates_by_negative_constraints)
 
 
 
@@ -362,7 +441,7 @@ class Ranker:
     
 
 # DEPRECATED METHODS FOR FRANCHISE COLLAPSING
-"""
+r"""
     @staticmethod
     def normalise_franchise(title: str) -> str:
         t = title.lower()

@@ -48,7 +48,8 @@ async def async_rag_pipeline(
     top_k: int,
     allow_adult: bool = False,
     seen_ids: Optional[set[int]] = None,
-    include_metadata: bool = True
+    include_metadata: bool = True,
+    request_id: Optional[str] = None,
 ):
     """
     Non-blocking asynchronous RAG-Fusion pipeline orchestrator.
@@ -67,7 +68,10 @@ async def async_rag_pipeline(
     t = Timer()
     extra_clauses, extra_params = [], []
 
-    queries = await query_generator.generate_async(user_query=query)
+    try:
+        queries = await query_generator.generate_async(user_query=query, request_id=request_id)
+    except TypeError:
+        queries = await query_generator.generate_async(user_query=query)
 
     timings['self_query_ms'] = 0.0
     timings['query_generation_ms'] = t.elapsed()
@@ -132,7 +136,8 @@ def rag_pipeline(
     top_k: int,
     allow_adult: bool = False,
     seen_ids: Optional[set[int]] = None,
-    include_metadata: bool = True
+    include_metadata: bool = True,
+    request_id: Optional[str] = None,
 ):
     """
     Synchronous Iteration 2 RAG-Fusion pipeline.
@@ -145,7 +150,10 @@ def rag_pipeline(
     # ----------------------
     t = Timer()
     extra_clauses, extra_params = [], []
-    queries = query_generator.generate(user_query=query)
+    try:
+        queries = query_generator.generate(user_query=query, request_id=request_id)
+    except TypeError:
+        queries = query_generator.generate(user_query=query)
 
     timings['self_query_ms'] = 0.0
     timings['query_generation_ms'] = t.elapsed()

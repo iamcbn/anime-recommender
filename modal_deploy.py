@@ -1,5 +1,16 @@
 import os
 import sys
+
+# Defensive config fallback on environments where ~/.modal.toml is permission-restricted
+if "MODAL_CONFIG_PATH" not in os.environ:
+    try:
+        user_config_path = os.path.expanduser("~/.modal.toml")
+        if os.path.exists(user_config_path):
+            with open(user_config_path, "r") as _:
+                pass
+    except (PermissionError, OSError):
+        os.environ["MODAL_CONFIG_PATH"] = os.devnull
+
 import modal
 
 app = modal.App("anime-recommender-api")
@@ -81,15 +92,37 @@ class ModelWorker:
 # -----------------------------------------------------------------------------
 # GATEWAY TIER: CPU FASTAPI ASGI SERVER
 # -----------------------------------------------------------------------------
+def get_gateway_secrets(use_per_layer: bool | None = None) -> list[modal.Secret]:
+    """
+    Returns secrets required by the FastAPI gateway.
+    When use_per_layer is True (default in production), injects granular secrets
+    for three-key isolation ('openai-nli-secret', 'openai-retrieval-secret',
+    'openai-presentation-secret') alongside 'anime-secret'.
+    Otherwise, injects shared 'openai-secret' alongside 'anime-secret'.
+    """
+    secrets = [modal.Secret.from_name("anime-secret")]
+    if use_per_layer is None:
+        use_per_layer = os.getenv("MODAL_USE_PER_LAYER_SECRETS", "true").lower() in ("1", "true", "yes")
+
+    if use_per_layer:
+        secrets.extend([
+            modal.Secret.from_name("openai-nli-secret"),
+            modal.Secret.from_name("openai-retrieval-secret"),
+            modal.Secret.from_name("openai-presentation-secret"),
+        ])
+    else:
+        secrets.append(modal.Secret.from_name("openai-secret"))
+    return secrets
+
+
+GATEWAY_SECRETS = get_gateway_secrets()
+
 @app.function(
     image=image,
     cpu=1.0,
     memory=1024,
     timeout=120,
-    secrets=[
-        modal.Secret.from_name("anime-secret"),
-        modal.Secret.from_name("openai-secret"),
-    ],
+    secrets=GATEWAY_SECRETS,
     env={
         "INFERENCE_MODE": "modal",
         "PYTHONPATH": "/root",

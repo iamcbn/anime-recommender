@@ -38,8 +38,15 @@ from backend.auth.keys import (
     ApiKeyContext,
     authenticate_api_key,
 )
+from backend.auth.supabase_jwt import get_jwks_service
 from backend.routers.dev_keys import router as dev_keys_router
-from backend.telemetry.logger import strip_scores, sanitize_for_json, log_recommendation_event
+from backend.routers.admin_usage import router as admin_usage_router
+from backend.telemetry.logger import (
+    strip_scores,
+    sanitize_for_json,
+    log_recommendation_event,
+    OPENAI_KEY_REDACT_REGEX,
+)
 
 logger = logging.getLogger("anime_recommender.main")
 
@@ -85,25 +92,38 @@ app.add_middleware(
 # Mount Developer Self-Service Router
 app.include_router(dev_keys_router)
 
+# Mount Admin LLM Usage Telemetry & Budget Router (Sprint 11)
+app.include_router(admin_usage_router)
+
 
 # ----------------------
 # LOGGING HYGIENE & ERROR HANDLING
 # ----------------------
 
 BEARER_REDACT_REGEX = re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.IGNORECASE)
-KEY_REDACT_REGEX = re.compile(r"ar_live_[a-f0-9]{8}_[A-Za-z0-9_\-]+", re.IGNORECASE)
+KEY_REDACT_REGEX = re.compile(r"ar_live_[A-Za-z0-9_\-]+", re.IGNORECASE)
+OPENAI_KEY_REDACT_REGEX = re.compile(r"sk-(?:proj-)?[A-Za-z0-9_\-]{16,}", re.IGNORECASE)
+
+
+def sanitize_secrets(text: Any) -> Any:
+    """Ensures raw API keys, Bearer tokens, and OpenAI secrets are redacted from strings."""
+    if not isinstance(text, str):
+        return text
+    text = BEARER_REDACT_REGEX.sub(r"\1[REDACTED]", text)
+    text = KEY_REDACT_REGEX.sub("[REDACTED_API_KEY]", text)
+    text = OPENAI_KEY_REDACT_REGEX.sub("[REDACTED_OPENAI_KEY]", text)
+    return text
 
 
 @app.middleware("http")
 async def secret_redaction_middleware(request: Request, call_next):
-    """Ensures raw API keys and Bearer tokens are never exposed in access or debug logs."""
+    """Ensures raw API keys, Bearer tokens, and OpenAI secrets are never exposed in access or debug logs."""
     try:
         response = await call_next(request)
         return response
     except Exception as exc:
         raw_msg = str(exc)
-        sanitized_msg = BEARER_REDACT_REGEX.sub(r"\1[REDACTED]", raw_msg)
-        sanitized_msg = KEY_REDACT_REGEX.sub("[REDACTED_API_KEY]", sanitized_msg)
+        sanitized_msg = sanitize_secrets(raw_msg)
         logger.error(f"[GatewayException] Error processing {request.method} {request.url.path}: {sanitized_msg}")
         raise exc
 
@@ -113,13 +133,18 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """
     Formats all HTTPExceptions to uniform schema: {"error": {"code": str, "message": str}, "detail": str}.
     Preserves any BackgroundTasks scheduled on request.state.background_tasks so error-path telemetry executes.
+    Guarantees no secret leaks in error payloads.
     """
     bg_tasks = getattr(request.state, "background_tasks", None)
 
     if isinstance(exc.detail, dict) and "error" in exc.detail:
         payload = dict(exc.detail)
+        if isinstance(payload.get("error"), dict) and "message" in payload["error"]:
+            payload["error"]["message"] = sanitize_secrets(str(payload["error"]["message"]))
         if "detail" not in payload:
             payload["detail"] = payload["error"].get("message", "")
+        elif isinstance(payload["detail"], str):
+            payload["detail"] = sanitize_secrets(payload["detail"])
         return JSONResponse(
             status_code=exc.status_code,
             content=payload,
@@ -139,7 +164,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         503: "service_unavailable",
     }
     err_code = code_map.get(exc.status_code, "error")
-    msg = str(exc.detail)
+    msg = sanitize_secrets(str(exc.detail))
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": err_code, "message": msg}, "detail": msg},
@@ -151,10 +176,21 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Formats validation errors to uniform error envelope."""
-    msg = str(exc)
+    msg = sanitize_secrets(str(exc))
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"error": {"code": "validation_error", "message": msg}, "detail": exc.errors()}
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all exception handler guaranteeing zero secret leakage on unexpected errors."""
+    sanitized_msg = sanitize_secrets(str(exc))
+    logger.error(f"[UnhandledException] Error processing {request.method} {request.url.path}: {sanitized_msg}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"error": {"code": "internal_server_error", "message": "An unexpected error occurred."}, "detail": sanitized_msg},
     )
 
 
@@ -344,6 +380,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, description="Optional multi-turn session ID")
     user_id: Optional[str] = Field(default=None, description="Optional user ID for cross-session watched/dropped history persistence")
     seen_ids: Optional[list[int]] = Field(default=None, description="Optional list of anime IDs to exclude")
+    disliked_genres: Optional[list[str]] = Field(default=None, description="Optional list of genres to avoid")
 
 
 # ----------------------
@@ -528,18 +565,158 @@ async def admin_recommend(
     )
 
 
+async def _resolve_chat_auth_and_rate_limit(
+    raw_request: Request,
+    body_user_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], str, Dict[str, str]]:
+    """
+    Evaluates auth tier and sliding-window rate limit for POST /chat (Sprint 9 Task 9.2).
+    - Anonymous Visitors: 5 queries / 15 min (900s) sliding window per client IP (key: ratelimit:chat:anon:{client_ip}).
+    - Authenticated Users (Supabase JWT): 20 queries / 1 hr (3600s) sliding window per user ID (key: ratelimit:chat:auth:{user_id}).
+    - Developer API Keys: Preserves existing API key validation (ar_live_... or legacy MY_API_KEY) and rate limits.
+    Returns (user_id, api_key_id, tier, rate_limit_headers).
+    """
+    client_ip = rate_limiter.extract_client_ip(raw_request)
+
+    # 1. Pre-auth brute-force lockout check
+    is_locked, _, retry_after = await rate_limiter.check_auth_failure_rate(client_ip)
+    if is_locked:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": {"code": "auth_throttled", "message": "Too many failed authentication attempts. Try again later."}},
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    auth_header = raw_request.headers.get("Authorization")
+    legacy_token = raw_request.headers.get("access_token")
+    x_api_key = raw_request.headers.get("x-api-key")
+
+    # Tier 1: Explicit Developer API Key headers (access_token or x-api-key)
+    if legacy_token or x_api_key:
+        key_ctx = await get_api_key(raw_request)
+        rate_headers = {
+            "X-RateLimit-Limit": str(key_ctx.rate_limit_per_min),
+        }
+        return body_user_id, key_ctx.key_id, "dev", rate_headers
+
+    # Tier 2: Authorization header present
+    if auth_header:
+        parts = auth_header.strip().split()
+        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else parts[0].strip()
+        if not token:
+            await rate_limiter.record_auth_failure(client_ip)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": "unauthorized", "message": "Missing authentication token."}},
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+        legacy_env_key = os.getenv("MY_API_KEY")
+        is_legacy = bool(legacy_env_key and hmac.compare_digest(token, legacy_env_key.strip()))
+
+        # Developer API Key via Bearer
+        if token.startswith("ar_live_") or is_legacy:
+            key_ctx = await get_api_key(raw_request)
+            rate_headers = {
+                "X-RateLimit-Limit": str(key_ctx.rate_limit_per_min),
+            }
+            return body_user_id, key_ctx.key_id, "dev", rate_headers
+
+        # Authenticated User via Supabase JWT Bearer
+        jwks = get_jwks_service()
+        try:
+            dev_user = jwks.verify_token(token)
+        except ValueError as val_err:
+            await rate_limiter.record_auth_failure(client_ip)
+            err_msg = str(val_err)
+            err_code = "invalid_token"
+            if "expired" in err_msg.lower():
+                err_code = "token_expired"
+            elif "15 minutes" in err_msg.lower():
+                err_code = "stale_token"
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": err_code, "message": err_msg}},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except Exception as exc:
+            await rate_limiter.record_auth_failure(client_ip)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": "invalid_token", "message": str(exc)}},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        auth_user_id = dev_user.user_id
+        is_limited, remaining, retry_after = await rate_limiter.check_rate_limit(
+            identifier=auth_user_id,
+            limit=20,
+            window=3600,
+            key_prefix="ratelimit:chat:auth",
+        )
+        if is_limited:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": "20",
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(retry_after),
+                },
+            )
+
+        rate_headers = {
+            "X-RateLimit-Limit": "20",
+            "X-RateLimit-Remaining": str(remaining),
+            "X-RateLimit-Reset": str(retry_after),
+        }
+        return auth_user_id, None, "auth", rate_headers
+
+    # Tier 3: Anonymous Visitor (no auth headers provided)
+    is_limited, remaining, retry_after = await rate_limiter.check_rate_limit(
+        identifier=client_ip,
+        limit=5,
+        window=900,
+        key_prefix="ratelimit:chat:anon",
+    )
+    if is_limited:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": "5",
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(retry_after),
+            },
+        )
+
+    rate_headers = {
+        "X-RateLimit-Limit": "5",
+        "X-RateLimit-Remaining": str(remaining),
+        "X-RateLimit-Reset": str(retry_after),
+    }
+    return body_user_id, None, "anon", rate_headers
+
+
 @app.post("/chat", include_in_schema=False)
 async def chat_endpoint(
     request: ChatRequest,
     raw_request: Request,
-    api_key: ApiKeyContext = Depends(get_api_key),
 ):
     """
-    Conversational SSE streaming endpoint (Sprint 3 & Sprint 4).
-    Dual-stream protocol with multi-turn Upstash Redis state tracking.
+    Conversational SSE streaming endpoint (Sprint 3, Sprint 4 & Sprint 9).
+    Dual user tier support with anonymous visitors (5/15m per IP) and Supabase JWT
+    authenticated users (20/1h per user ID), plus backward-compatible developer keys.
     Strips candidate scores and top_score at SSE serialization and logs telemetry
     once per turn after the stream ends via asyncio.to_thread.
     """
+    effective_user_id, api_key_id, tier, rate_headers = await _resolve_chat_auth_and_rate_limit(
+        raw_request=raw_request,
+        body_user_id=request.user_id,
+    )
+
     seen_ids_set = set(request.seen_ids) if request.seen_ids else None
     assigned_session_id = request.session_id or str(uuid.uuid4())
     client_ip = rate_limiter.extract_client_ip(raw_request)
@@ -550,6 +727,7 @@ async def chat_endpoint(
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
         "X-Session-ID": assigned_session_id,
+        **rate_headers,
     }
 
     try:
@@ -559,11 +737,12 @@ async def chat_endpoint(
             allow_adult=request.allow_adult,
             seen_ids=seen_ids_set,
             session_id=assigned_session_id,
-            user_id=request.user_id,
+            user_id=effective_user_id,
             is_disconnected=raw_request.is_disconnected,
-            api_key_id=api_key.key_id,
+            api_key_id=api_key_id,
             client_ip=client_ip,
             user_agent=user_agent,
+            avoid_genres=request.disliked_genres,
         )
     except TypeError:
         # Fallback if a unit test replaces orchestrator.stream_chat with a mock accepting legacy args only
@@ -573,7 +752,7 @@ async def chat_endpoint(
             allow_adult=request.allow_adult,
             seen_ids=seen_ids_set,
             session_id=assigned_session_id,
-            user_id=request.user_id,
+            user_id=effective_user_id,
             is_disconnected=raw_request.is_disconnected,
         )
 

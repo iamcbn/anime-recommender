@@ -54,7 +54,8 @@ RETRY_QUEUE_MAXLEN = 100
 
 # Redaction patterns for error strings
 _BEARER_REDACT_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.IGNORECASE)
-_KEY_REDACT_RE = re.compile(r"ar_live_[a-f0-9]{8}_[A-Za-z0-9_\-]+", re.IGNORECASE)
+_KEY_REDACT_RE = re.compile(r"ar_live_[A-Za-z0-9_\-]+", re.IGNORECASE)
+OPENAI_KEY_REDACT_REGEX = re.compile(r"sk-(?:proj-)?[A-Za-z0-9_\-]{16,}", re.IGNORECASE)
 
 # Raw IP keys that must never be persisted in client_metadata
 _RAW_IP_KEYS: FrozenSet[str] = frozenset({
@@ -104,6 +105,27 @@ VALUES (%s, (%s AT TIME ZONE 'UTC')::date, 1)
 ON CONFLICT (api_key_id, day)
 DO UPDATE SET request_count = telemetry.api_key_usage_daily.request_count + 1;
 """
+
+INSERT_LLM_USAGE_SQL = """
+INSERT INTO telemetry.llm_usage (
+    request_id,
+    session_id,
+    layer,
+    model,
+    prompt_tokens,
+    completion_tokens,
+    total_tokens,
+    cached,
+    latency_ms,
+    status,
+    error,
+    created_at
+)
+VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+);
+"""
+
 
 
 def sanitize_float(val: Any) -> Optional[float]:
@@ -306,6 +328,7 @@ def _sanitize_error_text(error: Optional[str]) -> Optional[str]:
     text = str(error)
     text = _BEARER_REDACT_RE.sub(r"\1[REDACTED]", text)
     text = _KEY_REDACT_RE.sub("[REDACTED_API_KEY]", text)
+    text = OPENAI_KEY_REDACT_REGEX.sub("[REDACTED_OPENAI_KEY]", text)
     return text[:MAX_ERROR_CHARS]
 
 
@@ -525,3 +548,90 @@ def log_recommendation_event(
     except Exception as exc:
         logger.warning(f"[TelemetryLogger] Unexpected error logging telemetry event: {exc}")
         return False
+
+
+def log_llm_usage_event(
+    *,
+    layer: str,
+    model: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: Optional[int] = None,
+    cached: bool = False,
+    latency_ms: float = 0.0,
+    status: str = "ok",
+    error: Optional[str] = None,
+    request_id: Optional[Union[str, uuid.UUID]] = None,
+    session_id: Optional[str] = None,
+    created_at: Optional[datetime] = None,
+    conn: Optional[Any] = None,
+) -> bool:
+    """
+    Asynchronously or synchronously logs an LLM token usage record to telemetry.llm_usage (Sprint 7).
+    Never raises exceptions; safely handles connection pooling and transient failures.
+    """
+    try:
+        norm_layer = (str(layer).lower() if layer else "presentation")[:32]
+        if norm_layer not in ("nli", "retrieval", "presentation"):
+            norm_layer = "presentation"
+
+        norm_status = (str(status).lower() if status else "ok")[:32]
+        if norm_status not in ("ok", "error", "cached", "fallback"):
+            norm_status = "ok"
+
+        norm_model = (str(model) if model else "unknown")[:64]
+        safe_p_tokens = max(0, int(prompt_tokens or 0))
+        safe_c_tokens = max(0, int(completion_tokens or 0))
+        safe_t_tokens = max(
+            0,
+            int(total_tokens if total_tokens is not None else (safe_p_tokens + safe_c_tokens)),
+        )
+        safe_latency = max(0.0, float(latency_ms or 0.0))
+        safe_error = _sanitize_error_text(error) if error else None
+
+        event_time = created_at or datetime.now(timezone.utc)
+        if event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=timezone.utc)
+
+        try:
+            from backend.rag_pipeline.helper.budget_guard import budget_guard
+            budget_guard.record_usage_sync(
+                layer=norm_layer,
+                tokens=safe_t_tokens,
+                target_date=event_time.strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            pass
+
+        params = (
+            str(request_id) if request_id else None,
+            str(session_id) if session_id else None,
+            norm_layer,
+            norm_model,
+            safe_p_tokens,
+            safe_c_tokens,
+            safe_t_tokens,
+            bool(cached),
+            safe_latency,
+            norm_status,
+            safe_error,
+            event_time,
+        )
+
+        def _do_insert(c):
+            with c.cursor() as cur:
+                cur.execute(INSERT_LLM_USAGE_SQL, params)
+            c.commit()
+
+        if conn is not None:
+            _do_insert(conn)
+            return True
+
+        with get_telemetry_connection() as active_conn:
+            _do_insert(active_conn)
+        return True
+
+    except Exception as exc:
+        logger.warning(f"[TelemetryLogger] Error logging LLM usage event: {exc}")
+        return False
+

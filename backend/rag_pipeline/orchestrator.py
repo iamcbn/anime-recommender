@@ -27,8 +27,15 @@ from typing import Optional, List, Dict, Any, Set, Tuple, AsyncGenerator, Callab
 from dataclasses import dataclass
 
 from .helper.guardrails import DomainGuardrails, GuardrailResult
-from .helper.synthesizer import RecommendationSynthesizer
+from .helper.synthesizer import (
+    RecommendationSynthesizer,
+    StreamingCitationBuffer,
+    validate_and_sanitize_citations,
+)
 from .helper.state_manager import StateManager, state_manager as default_state_manager
+from .helper.nli_parser import NLIParser, NLIOutput, should_bypass_nli, default_nli_parser
+from .helper.ranking import filter_candidates_by_negative_constraints
+from .helper.budget_guard import budget_guard
 from .rag_pipeline import async_rag_pipeline
 import backend.telemetry.logger as telemetry_logger
 from backend.telemetry.logger import strip_scores, sanitize_for_json
@@ -73,11 +80,13 @@ class PipelineOrchestrator:
         synthesizer: Optional[RecommendationSynthesizer] = None,
         state_manager: Optional[StateManager] = None,
         retrieval_func: Optional[Callable[..., Awaitable[Tuple[List[Dict[str, Any]], Dict[str, float]]]]] = None,
+        nli_parser: Optional[NLIParser] = None,
     ):
         self.guardrails = guardrails or DomainGuardrails()
         self.synthesizer = synthesizer or RecommendationSynthesizer()
         self.state_manager = state_manager if state_manager is not None else default_state_manager
         self._retrieval_func = retrieval_func or async_rag_pipeline
+        self.nli_parser = nli_parser or default_nli_parser
 
     def validate_query(self, query: str) -> GuardrailResult:
         """
@@ -92,19 +101,30 @@ class PipelineOrchestrator:
         top_k: int = 5,
         allow_adult: bool = False,
         seen_ids: Optional[Set[int]] = None,
+        request_id: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
         """
         Executes non-blocking retrieval and cross-encoder reranking.
         Filters seen_ids via O(1) set subtraction in Ranker.merge_deduplicate.
         Returns candidate anime list and latency timings dictionary.
         """
-        candidates, timings = await self._retrieval_func(
-            query=query,
-            top_k=top_k,
-            allow_adult=allow_adult,
-            seen_ids=seen_ids,
-            include_metadata=True,
-        )
+        try:
+            candidates, timings = await self._retrieval_func(
+                query=query,
+                top_k=top_k,
+                allow_adult=allow_adult,
+                seen_ids=seen_ids,
+                include_metadata=True,
+                request_id=request_id,
+            )
+        except TypeError:
+            candidates, timings = await self._retrieval_func(
+                query=query,
+                top_k=top_k,
+                allow_adult=allow_adult,
+                seen_ids=seen_ids,
+                include_metadata=True,
+            )
         return candidates, timings
 
     async def stream_chat(
@@ -122,6 +142,7 @@ class PipelineOrchestrator:
         client_ip: Optional[str] = None,
         user_agent: Optional[str] = None,
         client_metadata: Optional[Dict[str, Any]] = None,
+        avoid_genres: Optional[List[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Dual-Stream SSE generator powering POST /chat (Sprint 3 & Sprint 4).
@@ -209,15 +230,71 @@ class PipelineOrchestrator:
             pipeline_timings["state_lookup_ms"] = state_lookup_ms
 
             # ---------------------------------------------------------
+            # STEP 2.5: NLI QUERY UNDERSTANDING (Sprint 8 & Sprint 11)
+            # ---------------------------------------------------------
+            effective_query = query
+            nli_avoid_genres: List[str] = []
+            avoid_tropes: List[str] = []
+            nli_intent = "new_search"
+
+            if should_bypass_nli(query, active_history):
+                pipeline_timings["nli_ms"] = 0.0
+                logger.info(f"[PipelineOrchestrator] NLI bypassed ($0 spent) for query: '{query}'")
+            elif await budget_guard.is_budget_exceeded("nli"):
+                pipeline_timings["nli_ms"] = 0.0
+                logger.warning(
+                    f"[PipelineOrchestrator] NLI daily token budget exceeded! "
+                    f"Bypassing NLI query rewrite; passing raw user query directly ($0 spent)."
+                )
+            else:
+                t_nli = time.perf_counter()
+                nli_result = await self.nli_parser.parse_async(
+                    query=query,
+                    history=active_history,
+                    request_id=active_request_id,
+                    session_id=active_session_id,
+                )
+                effective_query = nli_result.standalone_query or query
+                nli_avoid_genres = nli_result.avoid_genres or []
+                avoid_tropes = nli_result.avoid_tropes or []
+                nli_intent = nli_result.intent
+                pipeline_timings["nli_ms"] = round((time.perf_counter() - t_nli) * 1000, 2)
+                logger.info(
+                    f"[PipelineOrchestrator] NLI parsed: standalone='{effective_query}', "
+                    f"avoid_genres={nli_avoid_genres}, intent={nli_intent} in {pipeline_timings['nli_ms']}ms"
+                )
+
+            # Deduplicated case-insensitive merge of avoid_genres from request and NLI (Sprint 9 Task 9.2)
+            combined_avoid_genres: List[str] = []
+            seen_genres_lower = set()
+
+            for g in (avoid_genres or []):
+                if g and str(g).strip():
+                    clean_g = str(g).strip()
+                    g_lower = clean_g.lower()
+                    if g_lower not in seen_genres_lower:
+                        seen_genres_lower.add(g_lower)
+                        combined_avoid_genres.append(clean_g)
+
+            for g in nli_avoid_genres:
+                if g and str(g).strip():
+                    clean_g = str(g).strip()
+                    g_lower = clean_g.lower()
+                    if g_lower not in seen_genres_lower:
+                        seen_genres_lower.add(g_lower)
+                        combined_avoid_genres.append(clean_g)
+
+            # ---------------------------------------------------------
             # STEP 3: ASYNC RETRIEVAL & CROSS-ENCODER RERANKING
             # ---------------------------------------------------------
             t_retrieval_start = time.perf_counter()
             try:
                 candidates, retrieval_timings = await self.execute_retrieval(
-                    query=query,
+                    query=effective_query,
                     top_k=top_k,
                     allow_adult=allow_adult,
                     seen_ids=cumulative_seen_ids,
+                    request_id=active_request_id,
                 )
                 pipeline_timings.update(retrieval_timings)
             except Exception as e:
@@ -234,6 +311,16 @@ class PipelineOrchestrator:
 
             total_retrieval_ms = round((time.perf_counter() - t_retrieval_start) * 1000, 2)
             pipeline_timings["total_retrieval_ms"] = total_retrieval_ms
+
+            # ---------------------------------------------------------
+            # STEP 3.5: NEGATIVE CONSTRAINT FILTERING (Sprint 8 & Sprint 9)
+            # ---------------------------------------------------------
+            if combined_avoid_genres or avoid_tropes:
+                candidates = filter_candidates_by_negative_constraints(
+                    candidates,
+                    avoid_genres=combined_avoid_genres,
+                    avoid_tropes=avoid_tropes,
+                )
 
             # ---------------------------------------------------------
             # STEP 4: RECORD NEW SEEN IDS TO REDIS (AC 4.2)
@@ -273,10 +360,12 @@ class PipelineOrchestrator:
             public_candidates = strip_scores(candidates)
             yield format_sse("metadata", {
                 "query": query,
+                "effective_query": effective_query,
                 "session_id": active_session_id,
                 "user_id": active_user_id,
                 "count": len(public_candidates),
                 "candidates": public_candidates,
+                "avoid_genres": combined_avoid_genres,
                 "timings": pipeline_timings,
             })
 
@@ -287,22 +376,79 @@ class PipelineOrchestrator:
             tokens_emitted = 0
             accumulated_pitch_chunks: List[str] = []
 
-            try:
-                async for token_chunk in self.synthesizer.stream_pitch(
-                    query=query,
-                    candidates=candidates,
-                    conversation_history=active_history,
-                    is_disconnected=is_disconnected,
-                ):
-                    if is_disconnected and await is_disconnected():
-                        logger.info("[PipelineOrchestrator] Client disconnected during token stream; stopping.")
-                        return
+            # Collect valid candidate IDs for structured citation validation (Sprint 10 Task 10.1)
+            valid_candidate_ids: Set[int] = {
+                c["id"] for c in candidates if isinstance(c, dict) and "id" in c
+            }
+            citation_buffer = StreamingCitationBuffer(valid_candidate_ids)
 
-                    if token_chunk:
+            try:
+                if await budget_guard.is_budget_exceeded("presentation"):
+                    logger.warning(
+                        "[PipelineOrchestrator] Presentation daily token budget exceeded! "
+                        "Skipping OpenAI streaming; serving deterministic fallback pitch ($0 spent)."
+                    )
+                    fallback_text = self.synthesizer.generate_fallback_pitch(effective_query, candidates)
+                    words = fallback_text.split(" ")
+                    for i, word in enumerate(words):
+                        if is_disconnected and await is_disconnected():
+                            logger.info("[PipelineOrchestrator] Client disconnected during budget fallback stream; aborting.")
+                            return
+                        token = word + (" " if i < len(words) - 1 else "")
+                        scrubbed_token = self.guardrails.scrub_spoilers(token)
+                        sanitized_token = citation_buffer.feed(scrubbed_token)
+                        if sanitized_token:
+                            tokens_emitted += 1
+                            accumulated_pitch_chunks.append(sanitized_token)
+                            yield format_sse("token", {"text": sanitized_token})
+                    flushed_chunk = citation_buffer.flush()
+                    if flushed_chunk:
                         tokens_emitted += 1
-                        scrubbed_chunk = self.guardrails.scrub_spoilers(token_chunk)
-                        accumulated_pitch_chunks.append(scrubbed_chunk)
-                        yield format_sse("token", {"text": scrubbed_chunk})
+                        accumulated_pitch_chunks.append(flushed_chunk)
+                        yield format_sse("token", {"text": flushed_chunk})
+                else:
+                    def _invoke_stream_pitch():
+                        try:
+                            return self.synthesizer.stream_pitch(
+                                query=effective_query,
+                                candidates=candidates,
+                                conversation_history=active_history,
+                                is_disconnected=is_disconnected,
+                                request_id=active_request_id,
+                                session_id=active_session_id,
+                            )
+                        except TypeError:
+                            try:
+                                return self.synthesizer.stream_pitch(
+                                    query=effective_query,
+                                    candidates=candidates,
+                                    history=active_history,
+                                )
+                            except TypeError:
+                                return self.synthesizer.stream_pitch(
+                                    effective_query,
+                                    candidates,
+                                )
+
+                    async for token_chunk in _invoke_stream_pitch():
+                        if is_disconnected and await is_disconnected():
+                            logger.info("[PipelineOrchestrator] Client disconnected during token stream; stopping.")
+                            return
+
+                        if token_chunk:
+                            scrubbed_chunk = self.guardrails.scrub_spoilers(token_chunk)
+                            sanitized_chunk = citation_buffer.feed(scrubbed_chunk)
+                            if sanitized_chunk:
+                                tokens_emitted += 1
+                                accumulated_pitch_chunks.append(sanitized_chunk)
+                                yield format_sse("token", {"text": sanitized_chunk})
+
+                    # Flush any remaining buffer at stream completion
+                    flushed_chunk = citation_buffer.flush()
+                    if flushed_chunk:
+                        tokens_emitted += 1
+                        accumulated_pitch_chunks.append(flushed_chunk)
+                        yield format_sse("token", {"text": flushed_chunk})
 
             except Exception as e:
                 logger.exception(f"[PipelineOrchestrator] Uncaught exception in synthesis stream: {e}")

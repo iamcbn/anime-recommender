@@ -22,7 +22,7 @@ import json
 import time
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, AsyncGenerator, Callable, Awaitable, Union
+from typing import List, Dict, Any, Optional, AsyncGenerator, Callable, Awaitable, Union, Set
 
 import httpx
 from openai import AsyncOpenAI
@@ -40,6 +40,9 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
+from .llm_clients import resolve_layer_api_key
+from .budget_guard import budget_guard
+from backend.telemetry.logger import log_llm_usage_event
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ STRICT GROUNDING CONSTRAINTS:
 3. NEVER reveal major plot twists, traitor identities, endings, or character deaths (SPOILER PROHIBITION).
 4. TASTE CONCIERGE PERSONA: Cinematic, engaging, and discerning. Explain specifically WHY each anime connects to the narrative hooks, themes, or emotional atmosphere the user is looking for.
 5. FORMAT: Provide an engaging introductory hook, followed by a crisp bulleted rationale for each recommended title. Keep it punchy, evocative, and readable.
+6. STRUCTURED CITATIONS & ANIME TAGS: Whenever you mention, explain, or pitch an anime from the candidate list, cite it using structured notation: [[anime:<id>]]. For example: "If you want psychological tension, [[anime:19]] (Monster) is a masterpiece of suspense...". The <id> MUST strictly match the numerical candidate ID from the provided candidate list (e.g. [ID: <id>]). Never invent or hallucinate candidate IDs.
 """
 
 HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -71,6 +75,107 @@ SPOILER_PATTERNS = re.compile(
     r")",
     re.IGNORECASE
 )
+
+# Structured anime citation regex pattern [[anime:<id>]]
+ANIME_CITATION_PATTERN = re.compile(r"\[\[anime:(\d+)\]\]")
+
+# Matches any suffix that could be an incomplete [[anime:<id>]] tag at stream chunk boundaries
+PARTIAL_TAG_PATTERN = re.compile(
+    r"\[(?:\[(?:a(?:n(?:i(?:m(?:e(?::(?:\d+(?:\])?)?)?)?)?)?)?)?)?$"
+)
+
+
+def validate_and_sanitize_citations(
+    text: str,
+    valid_candidate_ids: Optional[Union[Set[Any], List[Any], Dict[Any, Any]]] = None,
+) -> str:
+    """
+    Validates and sanitizes structured anime citation tags [[anime:<id>]].
+    Preserves valid candidate tags; strips hallucinated or unverified tags.
+    """
+    if not text:
+        return ""
+
+    if not valid_candidate_ids:
+        valid_int_ids = set()
+    else:
+        valid_int_ids = set()
+        for x in valid_candidate_ids:
+            try:
+                valid_int_ids.add(int(x))
+            except (ValueError, TypeError):
+                continue
+
+    def _replace_tag(match: re.Match) -> str:
+        tag_id_str = match.group(1)
+        try:
+            tag_id = int(tag_id_str)
+            if tag_id in valid_int_ids:
+                return match.group(0)
+            return ""
+        except ValueError:
+            return ""
+
+    return ANIME_CITATION_PATTERN.sub(_replace_tag, text)
+
+
+class StreamingCitationBuffer:
+    """
+    Stateful streaming citation buffer and sanitization filter.
+
+    Handles token chunk boundary fragmentation where `[[anime:<id>]]` tags may be
+    split across arbitrary chunk boundaries (e.g. `[[ani` + `me:19]]`).
+    Buffers partial `[[` tag sequences until completed or until confirming it is not a tag,
+    validates the resolved ID against `valid_candidate_ids`, and emits sanitized text.
+    """
+
+    def __init__(
+        self,
+        valid_candidate_ids: Optional[Union[Set[Any], List[Any], Dict[Any, Any]]] = None,
+        max_buffer_len: int = 64,
+    ):
+        self.valid_candidate_ids = valid_candidate_ids or set()
+        self.max_buffer_len = max_buffer_len
+        self._buffer: str = ""
+
+    def feed(self, chunk: Optional[str]) -> str:
+        """
+        Feeds a newly arrived token chunk into the buffer and returns safe, sanitized text.
+        Any incomplete tag suffix remains buffered until the next chunk or flush.
+        """
+        if not chunk:
+            return ""
+
+        self._buffer += chunk
+
+        if len(self._buffer) > self.max_buffer_len:
+            safe = self._buffer
+            self._buffer = ""
+        else:
+            match = PARTIAL_TAG_PATTERN.search(self._buffer)
+            if match:
+                safe = self._buffer[:match.start()]
+                self._buffer = self._buffer[match.start():]
+            else:
+                safe = self._buffer
+                self._buffer = ""
+
+        return validate_and_sanitize_citations(safe, self.valid_candidate_ids)
+
+    process_chunk = feed
+
+    def flush(self) -> str:
+        """
+        Flushes and sanitizes any remaining buffered text at the end of the stream.
+        """
+        remaining = self._buffer
+        self._buffer = ""
+        return validate_and_sanitize_citations(remaining, self.valid_candidate_ids)
+
+    finalize = flush
+
+
+StreamingCitationFilter = StreamingCitationBuffer
 
 
 def sanitize_html(text: Optional[str]) -> str:
@@ -111,7 +216,8 @@ class RecommendationSynthesizer:
         max_retries: int = 2,
         async_client: Optional[Any] = None,
     ):
-        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
+        resolved_key = resolve_layer_api_key("presentation", api_key)
+        self.api_key = resolved_key
         self.model = model or DEFAULT_MODEL
         self.timeout = timeout
         self.max_retries = max_retries
@@ -169,7 +275,9 @@ class RecommendationSynthesizer:
         for i, c in enumerate(candidates, 1):
             title = self._extract_title(c)
             romaji = c.get("title_romaji")
-            title_line = f"{i}. Title: {title}"
+            cid = c.get("id")
+            id_prefix = f"[ID: {cid}] " if cid is not None else ""
+            title_line = f"{i}. {id_prefix}Title: {title}"
             if romaji and romaji != title:
                 title_line += f" ({romaji})"
 
@@ -265,6 +373,8 @@ class RecommendationSynthesizer:
 
         for i, c in enumerate(candidates[:5], 1):
             title = self._extract_title(c)
+            cid = c.get("id")
+            tag_str = f"[[anime:{cid}]] " if cid is not None else ""
             score = c.get("averageScore")
             score_str = f" • Rating: {score}%" if score is not None else ""
 
@@ -285,7 +395,7 @@ class RecommendationSynthesizer:
             desc = sanitize_html(c.get("description"))
             snippet = (desc[:180] + "...") if len(desc) > 180 else desc
 
-            lines.append(f"{i}. **{title}**{score_str}{studio_str}{genres_str}")
+            lines.append(f"{i}. {tag_str}**{title}**{score_str}{studio_str}{genres_str}")
             if snippet:
                 lines.append(f"   _{snippet}_\n")
             else:
@@ -321,6 +431,8 @@ class RecommendationSynthesizer:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
         request: Optional[Any] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Asynchronously streams the recommendation pitch rationale token-by-token.
@@ -328,9 +440,26 @@ class RecommendationSynthesizer:
         Wraps OpenAI calls with tenacity retry and aggregate timeout circuit breaker.
         Smoothly falls back to `generate_fallback_pitch` on failure without crashing.
         Actively scrubs spoilers across streamed tokens and detects client disconnects.
+        Records token usage to telemetry.llm_usage (Sprint 7).
         """
         if not candidates:
             yield "No matching anime were found in our database for this query."
+            return
+
+        # Check daily presentation budget ceiling (Sprint 11)
+        if await budget_guard.is_budget_exceeded("presentation"):
+            logger.warning(
+                "[RecommendationSynthesizer] Presentation daily token budget exceeded! "
+                "Skipping OpenAI streaming; yielding deterministic fallback pitch ($0 presentation tokens)."
+            )
+            fallback_text = self.generate_fallback_pitch(query, candidates)
+            words = fallback_text.split(" ")
+            for i, word in enumerate(words):
+                if await self._check_disconnected(is_disconnected, request):
+                    return
+                token = word + (" " if i < len(words) - 1 else "")
+                yield self.scrub_spoilers(token)
+                await asyncio.sleep(0.01)
             return
 
         # Immediate fallback if OpenAI client is unconfigured
@@ -355,6 +484,11 @@ class RecommendationSynthesizer:
         # ---------------------------------------------------------------------
         # 1. ATTEMPT OPENAI STREAMING WITH CIRCUIT BREAKER & TIMEOUT
         # ---------------------------------------------------------------------
+        t_stream_start = time.perf_counter()
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+
         try:
             retry_condition = retry_if_exception_type((
                 RateLimitError,
@@ -374,18 +508,32 @@ class RecommendationSynthesizer:
                 reraise=True,
             ):
                 with attempt:
-                    stream_response = await asyncio.wait_for(
-                        self.async_client.chat.completions.create(
-                            model=self.model,
-                            messages=messages,
-                            temperature=0.3,
-                            stream=True,
-                        ),
-                        timeout=self.timeout,
-                    )
+                    create_kwargs = {
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.3,
+                        "stream": True,
+                        "stream_options": {"include_usage": True},
+                    }
+                    try:
+                        stream_response = await asyncio.wait_for(
+                            self.async_client.chat.completions.create(**create_kwargs),
+                            timeout=self.timeout,
+                        )
+                    except TypeError:
+                        create_kwargs.pop("stream_options", None)
+                        stream_response = await asyncio.wait_for(
+                            self.async_client.chat.completions.create(**create_kwargs),
+                            timeout=self.timeout,
+                        )
 
                     # Iterate over streamed chunks
                     async for chunk in stream_response:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                            completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+                            total_tokens = getattr(chunk.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+
                         if await self._check_disconnected(is_disconnected, request):
                             logger.info("Client disconnected during stream; aborting LLM synthesis.")
                             return
@@ -397,6 +545,29 @@ class RecommendationSynthesizer:
                         if content:
                             scrubbed_content = self.scrub_spoilers(content)
                             yield scrubbed_content
+
+                    latency_ms = round((time.perf_counter() - t_stream_start) * 1000, 2)
+                    try:
+                        log_llm_usage_event(
+                            layer="presentation",
+                            model=self.model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            cached=False,
+                            latency_ms=latency_ms,
+                            status="ok",
+                            request_id=request_id,
+                            session_id=session_id,
+                        )
+                    except Exception:
+                        pass
+
+                    if total_tokens > 0:
+                        try:
+                            await budget_guard.record_usage("presentation", total_tokens)
+                        except Exception as b_err:
+                            logger.warning(f"[RecommendationSynthesizer] Failed to record budget usage: {b_err}")
 
                     return
 
@@ -411,6 +582,22 @@ class RecommendationSynthesizer:
         # 2. DETERMINISTIC CIRCUIT BREAKER FALLBACK (AC 3.3)
         # ---------------------------------------------------------------------
         if fallback_needed:
+            try:
+                log_llm_usage_event(
+                    layer="presentation",
+                    model=self.model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    cached=False,
+                    latency_ms=round((time.perf_counter() - t_stream_start) * 1000, 2),
+                    status="fallback",
+                    request_id=request_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
+
             fallback_text = self.generate_fallback_pitch(query, candidates)
             words = fallback_text.split(" ")
             for i, word in enumerate(words):
@@ -430,6 +617,8 @@ class RecommendationSynthesizer:
         is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
         request: Optional[Any] = None,
         post_process_token: Optional[Callable[[str], str]] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Complete Dual-Stream SSE Protocol Generator:
@@ -449,6 +638,8 @@ class RecommendationSynthesizer:
 
         # Step 2: Stream conversational rationale tokens (Phase 2)
         token_count = 0
+        valid_candidate_ids = {c["id"] for c in candidates if isinstance(c, dict) and "id" in c}
+        citation_buffer = StreamingCitationBuffer(valid_candidate_ids)
 
         async for token_chunk in self.stream_pitch(
             query=query,
@@ -456,13 +647,23 @@ class RecommendationSynthesizer:
             conversation_history=conversation_history,
             is_disconnected=is_disconnected,
             request=request,
+            request_id=request_id,
+            session_id=session_id,
         ):
             if await self._check_disconnected(is_disconnected, request):
                 logger.info("Client disconnected; halting SSE event generator.")
                 return
 
+            filtered_chunk = citation_buffer.feed(token_chunk)
+            if filtered_chunk:
+                token_count += 1
+                processed_chunk = post_process_token(filtered_chunk) if post_process_token else filtered_chunk
+                yield format_sse("token", {"text": processed_chunk})
+
+        flushed_chunk = citation_buffer.flush()
+        if flushed_chunk:
             token_count += 1
-            processed_chunk = post_process_token(token_chunk) if post_process_token else token_chunk
+            processed_chunk = post_process_token(flushed_chunk) if post_process_token else flushed_chunk
             yield format_sse("token", {"text": processed_chunk})
 
         # Step 3: Emit final telemetry event (Phase 3)

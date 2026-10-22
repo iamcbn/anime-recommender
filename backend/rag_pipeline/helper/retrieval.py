@@ -15,12 +15,29 @@ class DatabaseManager:
         self.PARAMS = PARAMS
         self.min_conn = min_conn
         self.max_conn = max_conn
-        self._pool = ThreadedConnectionPool(
-            minconn=min_conn,
-            maxconn=max_conn,
-            **PARAMS,
-            cursor_factory=extras.DictCursor
-        )
+        try:
+            self._pool = ThreadedConnectionPool(
+                minconn=min_conn,
+                maxconn=max_conn,
+                **PARAMS,
+                cursor_factory=extras.DictCursor
+            )
+        except Exception as e:
+            logger.warning(
+                f"[DatabaseManager] Immediate connection pool creation failed ({e}); "
+                "deferring initialization until first query."
+            )
+            self._pool = None
+
+    def _ensure_pool(self) -> ThreadedConnectionPool:
+        if self._pool is None:
+            self._pool = ThreadedConnectionPool(
+                minconn=self.min_conn,
+                maxconn=self.max_conn,
+                **self.PARAMS,
+                cursor_factory=extras.DictCursor
+            )
+        return self._pool
 
     # ----------------------
     # CONNECTION HANDLERS
@@ -41,7 +58,8 @@ class DatabaseManager:
 
         while conn is None:
             try:
-                conn = self._pool.getconn()
+                active_pool = self._ensure_pool()
+                conn = active_pool.getconn()
             except PoolError:
                 elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:

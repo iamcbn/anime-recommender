@@ -12,7 +12,9 @@ import { TermsPage } from './routes/TermsPage';
 import { PrivacyPage } from './routes/PrivacyPage';
 import { DevelopersPage } from './routes/DevelopersPage';
 import { AdminTelemetryPage } from './routes/AdminTelemetryPage';
+import { AdminLlmUsagePage } from './routes/AdminLlmUsagePage';
 import { DocsPage } from './routes/DocsPage';
+import { ChatPage } from './routes/ChatPage';
 import { NotFoundPage } from './routes/NotFoundPage';
 
 export const App: React.FC = () => {
@@ -22,8 +24,9 @@ export const App: React.FC = () => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootLayout />}>
-              {/* Default redirect to /docs */}
-              <Route index element={<Navigate to="/docs" replace />} />
+              {/* Consumer AI Discovery Chat Page at root / */}
+              <Route index element={<ChatPage />} />
+              <Route path="chat" element={<ChatPage />} />
 
               {/* Public Routes */}
               <Route path="docs" element={<DocsPage />} />
@@ -39,6 +42,7 @@ export const App: React.FC = () => {
                 {/* Admin-Only Protected Route (app_metadata.role === 'admin') */}
                 <Route element={<AdminRoute />}>
                   <Route path="admin/telemetry" element={<AdminTelemetryPage />} />
+                  <Route path="admin/llm-usage" element={<AdminLlmUsagePage />} />
                 </Route>
               </Route>
 

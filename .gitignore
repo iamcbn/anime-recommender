@@ -11,9 +11,10 @@ anime/
 .venv/
 venv/
 env/
-bin/
-lib/
-include/
+/bin/
+/lib/
+/include/
+!frontend/src/lib/
 
 # Configuration & Secrets
 database.ini

@@ -22,6 +22,7 @@ _LOGGER_EXPORTS = {
     "hash_client_ip",
     "sanitize_client_metadata",
     "log_recommendation_event",
+    "log_llm_usage_event",
     "flush_retry_queue",
 }
 

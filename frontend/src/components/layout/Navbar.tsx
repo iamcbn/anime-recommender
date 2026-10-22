@@ -38,6 +38,9 @@ export const Navbar: React.FC = () => {
           </Link>
 
           <nav className="hidden md:flex items-center gap-1">
+            <NavLink to="/" end className={navLinkClass}>
+              Discovery
+            </NavLink>
             <NavLink to="/docs" className={navLinkClass}>
               Docs
             </NavLink>
@@ -45,9 +48,14 @@ export const Navbar: React.FC = () => {
               API Keys
             </NavLink>
             {isAdmin && (
-              <NavLink to="/admin/telemetry" className={navLinkClass}>
-                Admin Telemetry
-              </NavLink>
+              <>
+                <NavLink to="/admin/telemetry" className={navLinkClass}>
+                  Admin Telemetry
+                </NavLink>
+                <NavLink to="/admin/llm-usage" className={navLinkClass}>
+                  LLM Usage
+                </NavLink>
+              </>
             )}
           </nav>
         </div>

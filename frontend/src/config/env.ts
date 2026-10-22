@@ -13,6 +13,9 @@ const FORBIDDEN_SECRET_KEYS = [
   'DATABASE_URL',
   'DB_PASSWORD',
   'JWT_SECRET',
+  'OPENAI_API_KEY',
+  'OPENAI_SECRET',
+  'OPENAI_KEY',
 ];
 
 // Security audit of import.meta.env

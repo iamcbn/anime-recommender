@@ -105,3 +105,17 @@ Record of all code removals, consolidations, repointings, and dependency changes
 - Implemented automated hygiene validation tool: `scripts/check_hygiene.py`.
 - Verified execution: `python scripts/check_hygiene.py` executed cleanly with zero violations (exit code 0).
 - Gate status: Sprint 6 exit gate Passed.
+
+
+## Sprint 7: Final Verification & Post-Tidy Metrics Comparison
+- Independent verification conducted from clean working tree:
+  - Verified hygiene script: `python scripts/check_hygiene.py` returned exit code 0 (zero violations).
+  - Verified frontend build: `tsc -b && vite build` built cleanly in 5.71s with zero errors or warnings.
+  - Verified app startup: `GET /` ASGI endpoint verified returning HTTP 200 with CUDA GPU acceleration.
+  - Verified Pytest test suite: exactly 336 passed, 5 skipped, 9 failed, 69 errors across 419 collected test items, representing 100% exact parity with the Sprint 0 baseline.
+- Before and after size metrics:
+  - Tracked source files removed: 3 (`Toast.tsx`, `userPreferences.ts`, `Dockerfile.gpu`).
+  - Lines of dead code and duplicate logic removed: 362 lines.
+  - Dependencies pruned: 6 packages removed across `requirements.txt` (-3), `backend/rag_pipeline/requirements.txt` (-2), and `backend/data_pipeline/requirements.txt` (-1).
+  - Anti-regrowth controls added: `AGENTS.md`, `CLAUDE.md`, and `scripts/check_hygiene.py`.
+- Gate status: Sprint 7 final gate Passed.

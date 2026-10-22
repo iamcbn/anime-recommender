@@ -175,28 +175,11 @@ class DatabaseManager:
         print("HNSW and GIN vector indexes dropped.")
 
 
-    def _adapt_value_old(self, x):
-        if x is None:
-            return None
-
-        # pandas missing values
-        if isinstance(x, float) and pd.isna(x):
-            return None
-        if x is pd.NA:
-            return None
-
-        # JSONB columns
-        if isinstance(x, (list, dict)):
-            return json.dumps(x)
-
-        # pgvector (numpy arrays)
-        if isinstance(x, np.ndarray):
-            return x.tolist()
-
-        return x
-    
 
     def _adapt_value(self, x):
+        """
+        Single source of truth for adapting Python types to PostgreSQL pgvector and JSONB values.
+        """
         # 1. Check for None (Python Null)
         if x is None:
             return None

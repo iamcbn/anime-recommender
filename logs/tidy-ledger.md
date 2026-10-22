@@ -404,7 +404,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 3
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### S-004
 - **Category:** `duplicate` / `superseded`
@@ -464,7 +464,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 3
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### S-008
 - **Category:** `superseded` / `orphan_asset`

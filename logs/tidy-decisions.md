@@ -64,3 +64,13 @@ Record of all code removals, consolidations, repointings, and dependency changes
   - Frontend build: `tsc -b && vite build` built in 4.58s with zero errors or warnings.
   - App startup: verified `GET /` returns 200 OK with CUDA GPU acceleration.
 - Gate status: Sprint 3 exit gate Passed.
+
+
+## Sprint 4: Consolidation of Duplicates & Supersessions
+- Consolidated duplicate and superseded data pipeline components:
+  - Pruned dead legacy helper `_adapt_value_old` from `backend/data_pipeline/helper/database.py` (`S-003`).
+  - Added single-source-of-truth docstring to surviving canonical `DatabaseManager._adapt_value` method.
+  - Verified exactly one definition of `_adapt_value` exists across the data pipeline subsystem.
+  - Deleted unreferenced `backend/data_pipeline/Dockerfile.gpu` (`S-007`), establishing `backend/data_pipeline/Dockerfile` as the single canonical CPU Dockerfile matching GitHub Actions CI and docker-compose.
+- Verified module loading: `backend.data_pipeline.helper.database.DatabaseManager` loads and imports cleanly.
+- Gate status: Sprint 4 exit gate Passed.

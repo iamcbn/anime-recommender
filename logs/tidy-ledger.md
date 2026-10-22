@@ -33,7 +33,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-002
 - **Category:** `dead_code`
@@ -47,7 +47,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-003
 - **Category:** `dead_code`
@@ -61,7 +61,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-004
 - **Category:** `dead_code`
@@ -75,7 +75,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-005
 - **Category:** `dead_code`
@@ -89,7 +89,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-006
 - **Category:** `dead_code`
@@ -103,7 +103,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-007
 - **Category:** `dead_code`
@@ -117,7 +117,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-008
 - **Category:** `dead_code`
@@ -131,7 +131,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-009
 - **Category:** `dead_code`
@@ -145,7 +145,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-010
 - **Category:** `dead_code`
@@ -159,7 +159,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-011
 - **Category:** `dead_code`
@@ -173,7 +173,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-012
 - **Category:** `dead_code`
@@ -187,7 +187,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-013
 - **Category:** `dead_code`
@@ -201,7 +201,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-014
 - **Category:** `dead_code`
@@ -215,7 +215,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-015
 - **Category:** `dead_code`
@@ -229,7 +229,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-016
 - **Category:** `dead_code`
@@ -243,7 +243,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-017
 - **Category:** `dead_code`
@@ -257,7 +257,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-018
 - **Category:** `dead_code`
@@ -271,7 +271,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-019
 - **Category:** `dead_code`
@@ -285,7 +285,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-020
 - **Category:** `dead_code`
@@ -299,7 +299,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-021
 - **Category:** `dead_code`
@@ -313,7 +313,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-022
 - **Category:** `dead_code`
@@ -327,7 +327,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-023
 - **Category:** `dead_code`
@@ -341,7 +341,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 2
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### D-024
 - **Category:** `dead_code`
@@ -374,7 +374,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 3
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### S-002
 - **Category:** `superseded` / `duplicate`
@@ -389,7 +389,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 3
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### S-003
 - **Category:** `superseded`
@@ -758,7 +758,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `repoint`
 - **Owner Agent:** Hunter 5
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### O-002
 - **Category:** `stale_doc`
@@ -814,7 +814,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 5
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### O-006
 - **Category:** `build_artefact`
@@ -828,7 +828,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 5
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### O-007
 - **Category:** `build_artefact`
@@ -842,7 +842,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 5
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### O-008
 - **Category:** `empty_directory`

@@ -43,3 +43,24 @@ Record of all code removals, consolidations, repointings, and dependency changes
   - `S-012`: `evaluation_report_v2.md` is active canonical evaluation output, not an obsolete duplicate.
   - `O-011`: Hand-maintained documentation protection policy (`NOTE_NON_IMPACTING_FILES.md`).
 - Exit gate passed: 100% of candidate findings categorized and recorded in `logs/tidy-report.md` and `logs/tidy-ledger.md`.
+
+
+## Sprint 3: Dead and Orphaned Code Removal
+- Executed removal of 29 verified dead code, unused symbol, and unreferenced asset findings:
+  - Deleted dead frontend component `frontend/src/components/common/Toast.tsx` (`D-001`).
+  - Deleted superseded preferences module `frontend/src/lib/userPreferences.ts` (`D-002`, `S-002`, 249 lines).
+  - Pruned unused `KeyStatus` type from `frontend/src/types/apiKeys.ts` (`D-003`).
+  - Pruned unused `AuthMode` type from `frontend/src/types/auth.ts` (`D-004`).
+  - Removed unused `RetrievalResult` dataclass from `backend/rag_pipeline/orchestrator.py` (`D-005`).
+  - Removed unused `is_valid_query` method from `backend/rag_pipeline/helper/guardrails.py` (`D-006`).
+  - Removed unused `is_hard_limit_exceeded` method from `backend/rag_pipeline/helper/budget_guard.py` (`D-007`).
+  - Removed unused `inspect_bucket_via_sql` function from `scripts/verify_storage_bucket.py` (`D-008`).
+  - Pruned unused imports across 14 backend and router modules (`D-009` through `D-023`).
+  - Repointed `frontend/index.html` to eliminate 404 error from missing `/vite.svg` (`O-001`).
+  - Cleaned untracked transpiled build artefacts `frontend/vite.config.js` and `frontend/vite.config.d.ts` (`S-001`, `O-007`).
+  - Cleaned untracked build artefacts and compilation caches (`O-005`, `O-006`).
+- Verified zero behavioural regressions:
+  - Pytest baseline: exactly 336 passed, 5 skipped, 9 failed, 69 errors (100% parity with baseline).
+  - Frontend build: `tsc -b && vite build` built in 4.58s with zero errors or warnings.
+  - App startup: verified `GET /` returns 200 OK with CUDA GPU acceleration.
+- Gate status: Sprint 3 exit gate Passed.

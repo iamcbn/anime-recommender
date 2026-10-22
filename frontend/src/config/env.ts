@@ -39,5 +39,5 @@ export interface AppEnv {
 export const env: AppEnv = {
   SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL || 'https://placeholder-project.supabase.co',
   SUPABASE_ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder-anon-key',
-  API_BASE_URL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, ''),
+  API_BASE_URL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001').replace(/\/+$/, ''),
 };

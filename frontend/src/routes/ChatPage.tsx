@@ -296,7 +296,7 @@ export const ChatPage: React.FC = () => {
                   key={anime.id}
                   anime={anime}
                   onMoreLikeThis={handleMoreLikeThis}
-                  isHighlighted={highlightedAnimeId === anime.id}
+                  isHighlighted={highlightedAnimeId === anime.id || hoveredAnimeId === anime.id}
                 />
               ))}
             </div>

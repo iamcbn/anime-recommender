@@ -64,7 +64,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } catch {}
     };
 
-    const handleMediaChange = (e?: MediaQueryListEvent | MediaQueryList) => {
+    const handleMediaChange = () => {
       syncTheme();
     };
 

@@ -27,7 +27,6 @@ export const LlmUsageView: React.FC<LlmUsageViewProps> = ({ usageData }) => {
     dailyUsage,
     budget,
     isLoading,
-    error,
     days,
     selectedLayer,
     setDays,

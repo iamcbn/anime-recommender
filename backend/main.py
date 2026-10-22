@@ -50,6 +50,14 @@ from backend.telemetry.logger import (
 
 logger = logging.getLogger("anime_recommender.main")
 
+# Log hardware acceleration status at import/startup
+import torch
+_cuda_available = torch.cuda.is_available()
+_device_name = torch.cuda.get_device_name(0) if _cuda_available else "CPU"
+_vram = f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB" if _cuda_available else "N/A"
+print(f"🚀 [Hardware Acceleration] Active PyTorch Device: {'CUDA (GPU)' if _cuda_available else 'CPU'} | Model GPU: {_device_name} | VRAM: {_vram}")
+logger.info(f"[Hardware Acceleration] Active PyTorch Device: {'CUDA (GPU)' if _cuda_available else 'CPU'} | Model GPU: {_device_name} | VRAM: {_vram}")
+
 app = FastAPI(title="Anime Recommendation API")
 
 # ----------------------

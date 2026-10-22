@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 import numpy as np, pandas as pd
@@ -30,7 +31,7 @@ class Embedder:
     FASTTEXT_FILE = "anime_fasttext.txt"
 
     # Ensuring SBERT uses GPU
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    DEVICE = os.getenv('TORCH_DEVICE') or ('cuda' if torch.cuda.is_available() else 'cpu')
     
 
     def __init__(self, model_path: Path = MODEL_PATH):
@@ -58,10 +59,18 @@ class Embedder:
             )
         
         try:
-            model = SentenceTransformer(str(self.sbert_path),
-                                        model_kwargs={"dtype":torch.float16}, 
-                                        tokenizer_kwargs={"fix_mistral_regex": True}, 
-                                        device=self.DEVICE)
+            device_name = (
+                torch.cuda.get_device_name(0)
+                if "cuda" in self.DEVICE and torch.cuda.is_available()
+                else "CPU"
+            )
+            logger.info(f"[Embedder] SBERT Bi-encoder loaded on device: {self.DEVICE} ({device_name})")
+            model = SentenceTransformer(
+                str(self.sbert_path),
+                model_kwargs={"dtype": torch.float16} if "cuda" in self.DEVICE else {}, 
+                tokenizer_kwargs={"fix_mistral_regex": True}, 
+                device=self.DEVICE,
+            )
             return model
         except Exception:
             logger.exception("SBERT Bi-encoder initialisation failed")
@@ -113,19 +122,27 @@ class Embedder:
     def execute(self, queries: List[str]) -> List[Tuple[List, List]]:
         """
         Embeds a list of query strings with both SBERT and FastText.
-
-        Args:
-            queries: A list of query strings, e.g. [original, query_b, query_c].
-
-        Returns:
-            A list of (sbert_embedding, fasttext_embedding) tuples,
-            one per input query, in the same order.
+        Uses batched GPU inference for SBERT to maximize throughput.
         """
+        if not queries:
+            return []
+
+        sbert_embeddings = self.sbert.encode(
+            queries,
+            batch_size=len(queries),
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+            device=self.DEVICE,
+        )
+
         results = []
-        for query in queries:
-            sbert_embedding = self.embed_text(query, 'sbert')
-            fasttext_embedding = self.embed_text(query, 'fasttext')
-            results.append((sbert_embedding, fasttext_embedding))
+        for i, query in enumerate(queries):
+            cleaned_text = query.replace('\n', ' ').replace('\r', ' ')
+            ft_vec = self.fasttext.get_sentence_vector(cleaned_text)
+            ft_emb = self._normalize(ft_vec).tolist()
+            results.append((sbert_embeddings[i].tolist(), ft_emb))
+
         return results
 
 

@@ -1,7 +1,7 @@
 // frontend/src/components/layout/Navbar.tsx
 import React from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LogOut, LogIn, Sun, Moon } from 'lucide-react';
+import { LogOut, Sun, Moon } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTheme } from '../../hooks/useTheme';
 import { Badge } from '../common/Badge';

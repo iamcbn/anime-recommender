@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import CrossEncoder
@@ -98,8 +99,8 @@ class Ranker:
     CROSS_ENCODER_DIR = "cross-encoder-mmarco-mMiniLMv2-L12-H384-v1"
 
     # Ensuring cross encoder uses GPU
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    MODEL_KWARGS = {"dtype": torch.float16} if DEVICE == "cuda" else {}
+    DEVICE = os.getenv('TORCH_DEVICE') or ('cuda' if torch.cuda.is_available() else 'cpu')
+    MODEL_KWARGS = {"dtype": torch.float16} if "cuda" in DEVICE else {}
 
     
 
@@ -124,11 +125,18 @@ class Ranker:
                 f"Run the data pipeline first to download models."
             )
         try:
-            model =  CrossEncoder(str(self.cross_encoder_path),
-                                  model_kwargs=self.MODEL_KWARGS, 
-                                  device=self.DEVICE,
-                                  tokenizer_kwargs={"fix_mistral_regex": True}
-                                  )
+            device_name = (
+                torch.cuda.get_device_name(0)
+                if "cuda" in self.DEVICE and torch.cuda.is_available()
+                else "CPU"
+            )
+            logger.info(f"[Ranker] CrossEncoder loaded on device: {self.DEVICE} ({device_name}) with kwargs: {self.MODEL_KWARGS}")
+            model = CrossEncoder(
+                str(self.cross_encoder_path),
+                model_kwargs=self.MODEL_KWARGS, 
+                device=self.DEVICE,
+                tokenizer_kwargs={"fix_mistral_regex": True},
+            )
             return model
         except Exception:
             logger.exception("CrossEncoder initialisation failed")

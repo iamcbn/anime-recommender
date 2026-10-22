@@ -1,10 +1,8 @@
-from .helper.service_embedding import Embedder
 from .helper.retrieval import DatabaseManager
-from .helper.ranking import Ranker
 from .helper.query_generator import QueryGenerator
 from .inference_client import get_inference_client, BaseInferenceClient
 from .config import config
-from typing import Text, Optional, Set
+from typing import Text, Optional
 from unittest.mock import MagicMock
 import time
 import logging

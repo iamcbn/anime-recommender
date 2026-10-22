@@ -18,5 +18,3 @@ export interface AuthState {
   isLoading: boolean;
   isAdmin: boolean;
 }
-
-export type AuthMode = 'magic_link' | 'password' | 'signup';

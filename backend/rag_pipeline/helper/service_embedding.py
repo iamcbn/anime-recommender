@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-import numpy as np, pandas as pd
+import numpy as np
 import fasttext
 import torch
 import logging

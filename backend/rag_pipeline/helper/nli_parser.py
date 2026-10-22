@@ -11,13 +11,11 @@ negative constraint extraction, and heuristic cost bypass safeguards:
    telemetry logging to telemetry.llm_usage, and robust fallback on error/timeout.
 """
 
-import os
 import re
 import time
 import logging
 import asyncio
-from typing import List, Literal, Optional, Dict, Any, Union
-import httpx
+from typing import List, Literal, Optional
 from openai import OpenAI, AsyncOpenAI
 from pydantic import BaseModel, Field
 

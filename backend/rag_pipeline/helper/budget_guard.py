@@ -16,7 +16,7 @@ Features:
 import os
 import logging
 import asyncio
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from collections import defaultdict
 from pydantic import BaseModel, Field
@@ -285,9 +285,6 @@ class BudgetGuard:
         """Returns True if daily token ceiling has been exhausted."""
         status = await self.check_budget_status(layer, date_str)
         return status["is_exceeded"]
-
-    async def is_hard_limit_exceeded(self, layer: str, date_str: Optional[str] = None) -> bool:
-        return await self.is_budget_exceeded(layer, date_str)
 
     async def is_soft_limit_exceeded(self, layer: str, date_str: Optional[str] = None) -> bool:
         status = await self.check_budget_status(layer, date_str)

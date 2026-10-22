@@ -10,7 +10,6 @@ import os
 import re
 import hmac
 import time
-import uuid
 import secrets
 import hashlib
 import logging

@@ -1,4 +1,4 @@
-from psycopg2 import connect, extras
+from psycopg2 import extras
 from psycopg2.pool import ThreadedConnectionPool, PoolError
 from typing import List, Tuple, Optional
 from contextlib import contextmanager

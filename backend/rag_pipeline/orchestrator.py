@@ -30,10 +30,9 @@ from .helper.guardrails import DomainGuardrails, GuardrailResult
 from .helper.synthesizer import (
     RecommendationSynthesizer,
     StreamingCitationBuffer,
-    validate_and_sanitize_citations,
 )
 from .helper.state_manager import StateManager, state_manager as default_state_manager
-from .helper.nli_parser import NLIParser, NLIOutput, should_bypass_nli, default_nli_parser
+from .helper.nli_parser import NLIParser, should_bypass_nli, default_nli_parser
 from .helper.ranking import filter_candidates_by_negative_constraints
 from .helper.budget_guard import budget_guard
 from .rag_pipeline import async_rag_pipeline
@@ -51,18 +50,6 @@ def format_sse(event: str, data: Any) -> str:
     """Formats an event name and JSON-serializable data dictionary into standard SSE payload."""
     payload = json.dumps(sanitize_for_json(data), ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
-
-
-# ----------------------
-# TYPED ORCHESTRATION MODELS
-# ----------------------
-
-@dataclass
-class RetrievalResult:
-    candidates: List[Dict[str, Any]]
-    timings: Dict[str, float]
-    is_confident: bool = True
-    confidence_detail: str = ""
 
 
 # ----------------------

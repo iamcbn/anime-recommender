@@ -27,7 +27,6 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Callable, Awaitabl
 import httpx
 from openai import AsyncOpenAI
 from openai import (
-    OpenAIError,
     RateLimitError,
     APIConnectionError,
     InternalServerError,

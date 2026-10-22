@@ -64,7 +64,6 @@ from typing import (
 
 from dotenv import load_dotenv
 import psycopg2
-from psycopg2 import extras
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq

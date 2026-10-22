@@ -20,14 +20,14 @@ import os
 import hmac
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from backend.rag_pipeline.helper.budget_guard import budget_guard, LayerBudgetStatus
 from backend.rag_pipeline.helper.rate_limiter import rate_limiter
-from backend.auth.supabase_jwt import get_jwks_service, DevUserContext
-from backend.auth.keys import authenticate_api_key, ApiKeyContext
+from backend.auth.supabase_jwt import get_jwks_service
+from backend.auth.keys import authenticate_api_key
 
 logger = logging.getLogger("anime_recommender.routers.admin_usage")
 

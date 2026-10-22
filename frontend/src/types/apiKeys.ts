@@ -35,5 +35,3 @@ export interface ApiErrorResponse {
   error: ApiErrorDetail;
   detail?: string;
 }
-
-export type KeyStatus = 'active' | 'revoked' | 'expired';

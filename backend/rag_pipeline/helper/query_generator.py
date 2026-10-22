@@ -1,8 +1,7 @@
-import os
 import time
 import logging
 import asyncio
-from typing import Optional, Any
+from typing import Optional
 import httpx
 from openai import OpenAI, AsyncOpenAI
 from pydantic import BaseModel

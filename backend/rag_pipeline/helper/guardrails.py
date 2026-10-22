@@ -9,7 +9,7 @@ Sprint 3: Production Domain Guardrails & Active Content Filter
 
 import re
 import html
-from typing import Any, List, Dict, Optional, Tuple, Union
+from typing import Any, List, Dict, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -457,11 +457,6 @@ class DomainGuardrails:
                 )
 
         return GuardrailResult(is_valid=True, detail="", category="ok")
-
-    @classmethod
-    def is_valid_query(cls, query: str) -> bool:
-        """Convenience boolean helper for intent validity."""
-        return cls.validate_intent(query).is_valid
 
     # -------------------------------------------------------------------------
     # 2. RETRIEVAL CONFIDENCE ASSESSMENT

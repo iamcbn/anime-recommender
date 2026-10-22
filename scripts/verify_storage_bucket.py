@@ -35,31 +35,6 @@ MAX_FILE_SIZE = 52428800  # 50 MB
 ALLOWED_MIMES = ["application/octet-stream", "application/vnd.apache.parquet"]
 
 
-def inspect_bucket_via_sql(conn) -> Optional[Dict[str, Any]]:
-    """
-    Directly checks the Supabase storage schema in PostgreSQL if accessible.
-    """
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, name, public, file_size_limit, allowed_mime_types 
-                FROM storage.buckets 
-                WHERE id = %s;
-            """, (BUCKET_NAME,))
-            row = cur.fetchone()
-            if row:
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "public": row[2],
-                    "file_size_limit": row[3],
-                    "allowed_mime_types": row[4],
-                }
-    except Exception as e:
-        logger.debug(f"Direct SQL storage check skipped: {e}")
-    return None
-
-
 def verify_or_create_bucket_via_sdk(create_if_missing: bool = True) -> Dict[str, Any]:
     """
     Inspects or provisions the bucket using the official Supabase Python client.

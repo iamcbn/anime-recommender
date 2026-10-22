@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import CrossEncoder
 import pandas as pd, numpy as np
 from typing import List, Tuple, Optional, Set, Any, Dict

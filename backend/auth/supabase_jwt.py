@@ -15,13 +15,11 @@ import time
 import logging
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
-from urllib.parse import urljoin
 
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
 from fastapi import Request, HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from cachetools import TTLCache
 
 logger = logging.getLogger("anime_recommender.auth.jwt")
 

@@ -9,7 +9,6 @@ Dual-mode Inference Client providing seamless abstraction between:
 """
 
 import os
-import sys
 import logging
 import asyncio
 from abc import ABC, abstractmethod

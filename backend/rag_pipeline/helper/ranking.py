@@ -94,7 +94,6 @@ class Ranker:
     MODEL_PATH = DIR / "models"
 
 
-    CROSS_ENCODER_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     CROSS_ENCODER_DIR = "cross-encoder-mmarco-mMiniLMv2-L12-H384-v1"
 
     # Ensuring cross encoder uses GPU

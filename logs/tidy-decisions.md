@@ -74,3 +74,22 @@ Record of all code removals, consolidations, repointings, and dependency changes
   - Deleted unreferenced `backend/data_pipeline/Dockerfile.gpu` (`S-007`), establishing `backend/data_pipeline/Dockerfile` as the single canonical CPU Dockerfile matching GitHub Actions CI and docker-compose.
 - Verified module loading: `backend.data_pipeline.helper.database.DatabaseManager` loads and imports cleanly.
 - Gate status: Sprint 4 exit gate Passed.
+
+
+## Sprint 5: Dependencies & Configuration Clean-Up
+- Pruned redundant and unused dependencies across dependency manifests:
+  - Pruned `scikit_learn==1.8.0` from `backend/rag_pipeline/requirements.txt` (`C-001`).
+  - Pruned `Requests==2.32.5` from `backend/rag_pipeline/requirements.txt` (`C-002`).
+  - Pruned `scikit_learn==1.8.0` from `backend/data_pipeline/requirements.txt` (`C-003`).
+  - Pruned `scikit_learn==1.8.0` from root `requirements.txt` (`C-004`).
+  - Pruned `google-genai==2.16.0` from root `requirements.txt` (`C-005`).
+  - Pruned `kaggle==2.2.4` from root `requirements.txt` (`C-006`).
+- Pruned unused model metadata class constants:
+  - Pruned `SBERT_NAME` and `FASTTEXT_FILE` from `backend/rag_pipeline/helper/service_embedding.py` (`C-009`).
+  - Pruned `CROSS_ENCODER_NAME` from `backend/rag_pipeline/helper/ranking.py` (`C-009`).
+- Standardised frontend environment variable configuration:
+  - Consolidated direct `import.meta.env.VITE_API_KEY` in `frontend/src/lib/chatStream.ts` into centralized `frontend/src/config/env.ts` (`C-012`).
+- Verified zero behavioural regressions:
+  - Frontend build: `tsc -b && vite build` built cleanly in 5.71s.
+  - App startup: verified `GET /` returns 200 OK with CUDA GPU acceleration.
+- Gate status: Sprint 5 exit gate Passed.

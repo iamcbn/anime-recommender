@@ -572,7 +572,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-002
 - **Category:** `dependency`
@@ -586,7 +586,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-003
 - **Category:** `dependency`
@@ -600,7 +600,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-004
 - **Category:** `dependency`
@@ -614,7 +614,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-005
 - **Category:** `dependency`
@@ -628,7 +628,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-006
 - **Category:** `dependency`
@@ -642,7 +642,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-007
 - **Category:** `config`
@@ -684,7 +684,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `delete`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-010
 - **Category:** `stale_script`
@@ -726,7 +726,7 @@ Shared ledger tracking all findings across discovery, challenge, execution, and 
 - **Confidence:** `high`
 - **Proposed Action:** `consolidate`
 - **Owner Agent:** Hunter 4
-- **Status:** `approved`
+- **Status:** `verified`
 
 ### C-013
 - **Category:** `dependency`

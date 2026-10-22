@@ -24,11 +24,9 @@ class Embedder:
     #MODEL_PATH = Path("models").resolve()
     
 
-    SBERT_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     SBERT_DIR = "paraphrase-multilingual-MiniLM-L12-v2"
 
     FASTTEXT_MODEL = "anime_fasttext.bin"
-    FASTTEXT_FILE = "anime_fasttext.txt"
 
     # Ensuring SBERT uses GPU
     DEVICE = os.getenv('TORCH_DEVICE') or ('cuda' if torch.cuda.is_available() else 'cpu')

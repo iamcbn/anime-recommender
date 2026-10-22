@@ -57,7 +57,7 @@ export async function streamChat({
     localStorage.getItem('ar_live_key') ||
     localStorage.getItem('ar_api_key') ||
     localStorage.getItem('apiKey') ||
-    (import.meta.env.VITE_API_KEY as string | undefined);
+    env.API_KEY;
 
   if (!authToken) {
     try {

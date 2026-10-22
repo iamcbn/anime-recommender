@@ -93,3 +93,15 @@ Record of all code removals, consolidations, repointings, and dependency changes
   - Frontend build: `tsc -b && vite build` built cleanly in 5.71s.
   - App startup: verified `GET /` returns 200 OK with CUDA GPU acceleration.
 - Gate status: Sprint 5 exit gate Passed.
+
+
+## Sprint 6: Anti-Regrowth Controls & Agent Guidance
+- Established permanent repository rules for future coding agents in `AGENTS.md` and `CLAUDE.md`:
+  - Mandatory pre-creation search to extend existing utilities rather than introducing parallel duplicates.
+  - Prohibition of leftover scratch and versioned file patterns (`_old`, `_new`, `_v2`, `_copy`, `_backup`, `_tmp`).
+  - Atomic deletion of superseded code within the same change.
+  - Designated location and metadata header rules for one-off scripts (`scripts/oneoff/`).
+  - Strict reinforcement of architectural invariants (dual entrypoint protection, data pipeline container isolation, centralised frontend environment configuration, British English without em-dashes).
+- Implemented automated hygiene validation tool: `scripts/check_hygiene.py`.
+- Verified execution: `python scripts/check_hygiene.py` executed cleanly with zero violations (exit code 0).
+- Gate status: Sprint 6 exit gate Passed.

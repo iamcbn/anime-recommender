@@ -286,6 +286,19 @@ class BudgetGuard:
         status = await self.check_budget_status(layer, date_str)
         return status["is_exceeded"]
 
+    def is_budget_exceeded_sync(self, layer: str, date_str: Optional[str] = None) -> bool:
+        """
+        Synchronous check if daily token ceiling has been exhausted.
+        Single source of truth for non-async callers (such as sync query generation and NLI fallback).
+        Reads from in-memory fallback store to ensure zero latency and avoid blocking threads.
+        """
+        norm_layer = (layer or "").strip().lower()
+        key = get_budget_key(norm_layer, date_str)
+        usage = self.fallback_store.get(key)
+        limit = self.get_limit(norm_layer)
+        return (usage >= limit) and limit > 0
+
+
     async def is_soft_limit_exceeded(self, layer: str, date_str: Optional[str] = None) -> bool:
         status = await self.check_budget_status(layer, date_str)
         return status["is_soft_limit_exceeded"]

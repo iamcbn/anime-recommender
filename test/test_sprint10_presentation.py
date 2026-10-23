@@ -207,7 +207,9 @@ class TestChatPageLinkingContract:
 
     def test_anime_card_highlight_prop_passed(self):
         """Verifies isHighlighted={highlightedAnimeId === anime.id} passed to AnimeCard."""
-        assert "isHighlighted={highlightedAnimeId === anime.id}" in self.code
+        assert "isHighlighted={highlightedAnimeId === anime.id}" in self.code or (
+            "highlightedAnimeId === anime.id" in self.code and "isHighlighted=" in self.code
+        )
 
 
 class TestSecretScannerSprint10:

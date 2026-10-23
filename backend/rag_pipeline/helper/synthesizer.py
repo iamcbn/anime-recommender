@@ -84,6 +84,14 @@ PARTIAL_TAG_PATTERN = re.compile(
 )
 
 
+def _safe_token_count(val: Any, default: int = 0) -> int:
+    """Safely extracts integer token counts, shielding against MagicMock or non-numeric types."""
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return int(val)
+    return default
+
+
+
 def validate_and_sanitize_citations(
     text: str,
     valid_candidate_ids: Optional[Union[Set[Any], List[Any], Dict[Any, Any]]] = None,
@@ -528,10 +536,14 @@ class RecommendationSynthesizer:
 
                     # Iterate over streamed chunks
                     async for chunk in stream_response:
-                        if hasattr(chunk, "usage") and chunk.usage:
-                            prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                            completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
-                            total_tokens = getattr(chunk.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+                        usage_obj = getattr(chunk, "usage", None)
+                        if usage_obj is not None:
+                            prompt_tokens = _safe_token_count(getattr(usage_obj, "prompt_tokens", 0) or 0)
+                            completion_tokens = _safe_token_count(getattr(usage_obj, "completion_tokens", 0) or 0)
+                            total_tokens = _safe_token_count(
+                                getattr(usage_obj, "total_tokens", None),
+                                default=prompt_tokens + completion_tokens,
+                            )
 
                         if await self._check_disconnected(is_disconnected, request):
                             logger.info("Client disconnected during stream; aborting LLM synthesis.")

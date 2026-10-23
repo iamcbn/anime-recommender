@@ -186,7 +186,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Formats validation errors to uniform error envelope."""
     msg = sanitize_secrets(str(exc))
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={"error": {"code": "validation_error", "message": msg}, "detail": exc.errors()}
     )
 

@@ -1,7 +1,7 @@
 import time
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 import httpx
 from openai import OpenAI, AsyncOpenAI
 from pydantic import BaseModel
@@ -14,6 +14,14 @@ from backend.telemetry.logger import log_llm_usage_event
 logger = logging.getLogger(__name__)
 
 MODEL = "gpt-5.4-mini"
+
+
+def _safe_token_count(val: Any, default: int = 0) -> int:
+    """Safely extracts integer token counts, shielding against MagicMock or non-numeric types."""
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return int(val)
+    return default
+
 
 # ----------------------
 # PYDANTIC RESPONSE SCHEMA
@@ -111,9 +119,13 @@ class QueryGenerator:
 
         llm_cache.set(cache_key, queries)
 
-        prompt_tokens = getattr(completion.usage, "prompt_tokens", 0) if hasattr(completion, "usage") and completion.usage else 0
-        completion_tokens = getattr(completion.usage, "completion_tokens", 0) if hasattr(completion, "usage") and completion.usage else 0
-        total_tokens = getattr(completion.usage, "total_tokens", 0) if hasattr(completion, "usage") and completion.usage else (prompt_tokens + completion_tokens)
+        usage_obj = getattr(completion, "usage", None)
+        prompt_tokens = _safe_token_count(getattr(usage_obj, "prompt_tokens", 0) if usage_obj else 0)
+        completion_tokens = _safe_token_count(getattr(usage_obj, "completion_tokens", 0) if usage_obj else 0)
+        total_tokens = _safe_token_count(
+            getattr(usage_obj, "total_tokens", None) if usage_obj else None,
+            default=prompt_tokens + completion_tokens,
+        )
         try:
             log_llm_usage_event(
                 layer="retrieval",
@@ -215,9 +227,13 @@ class QueryGenerator:
                 logger.info(f"Generated {len(queries)} queries via AsyncOpenAI for: '{user_query}'")
                 llm_cache.set(cache_key, queries)
 
-                prompt_tokens = getattr(completion.usage, "prompt_tokens", 0) if hasattr(completion, "usage") and completion.usage else 0
-                completion_tokens = getattr(completion.usage, "completion_tokens", 0) if hasattr(completion, "usage") and completion.usage else 0
-                total_tokens = getattr(completion.usage, "total_tokens", 0) if hasattr(completion, "usage") and completion.usage else (prompt_tokens + completion_tokens)
+                usage_obj = getattr(completion, "usage", None)
+                prompt_tokens = _safe_token_count(getattr(usage_obj, "prompt_tokens", 0) if usage_obj else 0)
+                completion_tokens = _safe_token_count(getattr(usage_obj, "completion_tokens", 0) if usage_obj else 0)
+                total_tokens = _safe_token_count(
+                    getattr(usage_obj, "total_tokens", None) if usage_obj else None,
+                    default=prompt_tokens + completion_tokens,
+                )
                 try:
                     log_llm_usage_event(
                         layer="retrieval",

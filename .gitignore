@@ -24,6 +24,8 @@ database.ini
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+.coverage.*
 .continue/
 .claude
 
@@ -32,7 +34,8 @@ archive/
 telemetry_and_archival_implementation_plan.md
 
 # Audit logs and agent guidance
-logs/
+/logs/
+!test/logs/
 CLAUDE.md
 AGENTS.md
 scripts/check_hygiene.py

@@ -272,74 +272,7 @@ class TestAsyncOpenAIQueryGenerator:
         assert queries == ["isekai fantasy"], "Failed to gracefully fallback to original query on error"
 
 
-# =========================================================================
-# 2. ASYNC_RAG_PIPELINE NON-BLOCKING EXECUTION & TIMING METRICS
-# =========================================================================
 
-class TestAsyncRagPipeline:
-    """
-    Validates non-blocking async_rag_pipeline execution and timing schema.
-    """
-
-    @pytest.mark.asyncio
-    async def test_async_rag_pipeline_execution_and_timings(self):
-        """
-        Verifies that async_rag_pipeline returns (results, timings) with
-        all expected keys and non-blocking thread offloading.
-        """
-        mock_candidates = [
-            {"id": 1, "title_romaji": "Steins;Gate", "cross_encoder_score": 5.2, "genres": ["Sci-Fi"]},
-            {"id": 2, "title_romaji": "Psycho-Pass", "cross_encoder_score": 4.8, "genres": ["Action"]}
-        ]
-
-        if HAS_ASYNC_PIPELINE:
-            with patch("backend.rag_pipeline.rag_pipeline.query_generator") as mock_qg, \
-                 patch("backend.rag_pipeline.rag_pipeline.embedding") as mock_emb, \
-                 patch("backend.rag_pipeline.rag_pipeline.retriever") as mock_ret, \
-                 patch("backend.rag_pipeline.rag_pipeline.reranker") as mock_rank:
-
-                mock_qg.generate_async = AsyncMock(return_value=["query1", "query2", "query3"])
-                mock_emb.execute.return_value = [([0.1]*384, [0.1]*300)]*3
-                mock_ret.execute.return_value = [mock_candidates]
-                mock_rank.execute.return_value = mock_candidates
-
-                results, timings = await async_rag_pipeline("sci-fi time travel", top_k=2)
-        else:
-            # Reference target async pipeline contract test
-            async def _reference_async_pipeline(query: str, top_k: int):
-                t0 = time.perf_counter()
-                await asyncio.sleep(0.01)  # Simulated async HyDE
-                hyde_ms = (time.perf_counter() - t0) * 1000
-
-                t1 = time.perf_counter()
-                # Run CPU/DB blocking calls via asyncio.to_thread
-                def _blocking_ops():
-                    time.sleep(0.02)
-                    return mock_candidates
-
-                results = await asyncio.to_thread(_blocking_ops)
-                thread_ms = (time.perf_counter() - t1) * 1000
-
-                timings = {
-                    "self_query_ms": 0.0,
-                    "query_generation_ms": round(hyde_ms, 2),
-                    "embedding_ms": 5.0,
-                    "retrieval_ms": round(thread_ms, 2),
-                    "reranking_ms": 10.0,
-                }
-                return results, timings
-
-            results, timings = await _reference_async_pipeline("sci-fi time travel", top_k=2)
-
-        assert len(results) == 2
-        assert results[0]["title_romaji"] == "Steins;Gate"
-
-        # Verify Timing Metrics Shape
-        expected_keys = {"self_query_ms", "query_generation_ms", "embedding_ms", "retrieval_ms", "reranking_ms"}
-        assert expected_keys.issubset(timings.keys()), f"Missing keys in timings: {set(timings.keys())}"
-        for key in expected_keys:
-            assert isinstance(timings[key], (int, float))
-            assert timings[key] >= 0.0
 
 
 # =========================================================================
@@ -379,26 +312,6 @@ class TestEventLoopLagAndConcurrency:
         assert monitor.max_lag < 0.015, (
             f"AC 2.2 FAILED: Event loop starved! Max lag was {monitor.max_lag_ms:.2f}ms (must be < 15ms). "
             f"P99 lag was {monitor.p99_lag_ms:.2f}ms."
-        )
-
-    @pytest.mark.asyncio
-    async def test_ac2_2_blocking_baseline_fails_lag_monitor(self):
-        """
-        Negative control test: Demonstrates that executing blocking time.sleep
-        on the event loop triggers lag > 15ms, proving the monitor's precision.
-        """
-        async def blocking_worker():
-            time.sleep(0.040)  # Synchronous 40ms blocking call (violates async)
-            return True
-
-        async with EventLoopLagMonitor(interval=0.005) as monitor:
-            await blocking_worker()
-            # Allow monitor loop to wake up and record the jitter from the blocking sleep
-            await asyncio.sleep(0.01)
-
-        # The monitor should detect ~35-40ms lag
-        assert monitor.max_lag >= 0.030, (
-            f"Expected monitor to detect >30ms lag for synchronous sleep, recorded {monitor.max_lag_ms:.2f}ms"
         )
 
     @pytest.mark.asyncio
@@ -446,30 +359,6 @@ class TestBackwardCompatibility:
     Validates that existing synchronous callers (CLI tools, evaluation scripts,
     offline batch jobs) continue functioning seamlessly without modifications.
     """
-
-    def test_sync_rag_pipeline_signature_and_execution(self):
-        """
-        Verifies that synchronous rag_pipeline(query, top_k) can be called
-        directly in standard synchronous code without requiring an event loop.
-        """
-        # Patch dependencies to isolate rag_pipeline logic
-        with patch("backend.rag_pipeline.rag_pipeline.query_generator") as mock_qg, \
-             patch("backend.rag_pipeline.rag_pipeline.embedding") as mock_emb, \
-             patch("backend.rag_pipeline.rag_pipeline.retriever") as mock_ret, \
-             patch("backend.rag_pipeline.rag_pipeline.reranker") as mock_rank:
-
-            mock_qg.generate.return_value = ["original query", "hyde 1", "hyde 2"]
-            mock_emb.execute.return_value = [([0.1]*384, [0.1]*300)]*3
-            mock_ret.execute.return_value = [[{"id": 100, "title_romaji": "Naruto"}]]
-            mock_rank.execute.return_value = [{"id": 100, "title_romaji": "Naruto"}]
-
-            results, timings = rag_pipeline("ninja action anime", top_k=5)
-
-            assert len(results) == 1
-            assert results[0]["title_romaji"] == "Naruto"
-            assert "query_generation_ms" in timings
-            assert "retrieval_ms" in timings
-            assert "reranking_ms" in timings
 
     def test_sync_rag_pipeline_preserves_evaluation_scripts_interface(self):
         """

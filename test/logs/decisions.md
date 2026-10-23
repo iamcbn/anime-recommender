@@ -52,3 +52,15 @@ This document records the architectural decisions, classifications (keep, merge,
 - Configured layer markers and `asyncio_mode = auto` in `pytest.ini`.
 - Logged BUG-001 in `test/logs/bugs-found.md` and annotated the two event loop lag tests with `xfail(strict=False)` to prevent Windows process scheduling jitter from causing flakiness during full suite runs.
 - Verified backend coverage increased to 67% (1,712 missed statements vs 2,731 at baseline).
+
+### Sprint 4: Integration Tests
+- Connected backend integration tests directly to real local PostgreSQL instance on `localhost:5432` (`anime_db`) using `backend.rag_pipeline.config.config()`.
+- Implemented `test/integration/test_backend_integration.py` (4 tests):
+  - Verified API key generation, HMAC-SHA256 hash storage in `app_auth.api_keys`, and structured audit trail in `app_auth.key_audit_log`.
+  - Verified database trigger `trg_enforce_max_active_keys` strictly enforcing the active key limit of 5 and permitting key recreation after soft revocation.
+  - Verified telemetry logging in `telemetry.recommendation_logs` and atomic increment in daily rollup table `telemetry.api_key_usage_daily`.
+  - Implemented session-level teardown snapshotting and purging test-created database rows to keep local development tables clean.
+- Created canonical typed mock API fixtures in `frontend/src/test/contractMocks.ts` covering recommendation results, developer keys, LLM budgets, daily token usage, and telemetry logs.
+- Created `frontend/src/test/apiContract.test.ts` (7 tests) verifying UI components (`KeyListTable`, `KeyQuotaBanner`, `LlmUsageView`, `TelemetryTable`) render canonical fixtures correctly without runtime errors.
+- Created `test/integration/test_frontend_contract_drift.py` (6 tests) parsing TypeScript contract mocks in Python and validating against real backend Pydantic models to guarantee schemas cannot silently drift.
+

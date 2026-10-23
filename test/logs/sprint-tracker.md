@@ -8,7 +8,7 @@ Sprint status and metrics for the test suite rebuild (Stage 1: local).
 | Sprint 1: Review and redundancy analysis | Done | Redundancy Analyst | 0 | 0 | 0 | 47% | - | Passed | 426 items classified: 282 KEEP (5 FLAGGED), 60 MERGE, 84 DELETE. Redundancy report delivered. |
 | Sprint 2: Prune | Done | Orchestrator | 0 | 4 | 73 | 66% | 83.52s | Passed | Pruned 73 redundant tests and dead benchmark scripts. Coverage increased from 47% to 66% with 100% pass rate. |
 | Sprint 3: Unit tests | Done | Test-writer (Unit) | 117 | 2 | 0 | 67% | 25.94s | Passed | 86 backend unit tests in test/unit/ and 31 frontend unit tests in frontend/src/ added. 100% clean exit. |
-| Sprint 4: Integration tests | In Progress | Test-writer (Integration) | 0 | 0 | 0 | - | - | Pending | Real local DB and contract checks |
+| Sprint 4: Integration tests | Done | Test-writer (Integration) | 17 | 0 | 0 | 67% | 24.58s | Passed | Real local DB integration, trigger limit enforcement, telemetry aggregation, UI contract rendering, and anti-drift validation verified. |
 | Sprint 5: System tests | Not Started | Test-writer (System) | 0 | 0 | 0 | - | - | Pending | Real HTTP API and browser flows |
 | Sprint 6: Regression tests | Not Started | Test-writer (Regression) | 0 | 0 | 0 | - | - | Pending | Git bug history and critical smoke |
 | Sprint 7: Performance tests | Not Started | Test-writer (Performance) | 0 | 0 | 0 | - | - | Pending | Configurable latency and load |

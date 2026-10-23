@@ -5,8 +5,8 @@ Sprint status and metrics for the test suite rebuild (Stage 1: local).
 | Sprint | Status | Agents Used | Tests Added | Tests Changed | Tests Deleted | Coverage | Runtime | Gate Result | Notes |
 |---|---|---|---|---|---|---|---|---|---|
 | Sprint 0: Baseline and discovery | Done | Orchestrator, Inventory Agents (Backend, Frontend, E2E/Scripts, Config/Fixtures) | 0 | 0 | 0 | 47% | 93.58s | Passed | Baseline established (419 collected, 417 passed, 2 isolated passes). Discovery complete. |
-| Sprint 1: Review and redundancy analysis | In Progress | Redundancy Analyst | 0 | 0 | 0 | - | - | Pending | Classifying all test files into keep, merge, or delete |
-| Sprint 2: Prune | Not Started | Orchestrator | 0 | 0 | 0 | - | - | Pending | Deletion of redundant tests |
+| Sprint 1: Review and redundancy analysis | Done | Redundancy Analyst | 0 | 0 | 0 | 47% | - | Passed | 426 items classified: 282 KEEP (5 FLAGGED), 60 MERGE, 84 DELETE. Redundancy report delivered. |
+| Sprint 2: Prune | In Progress | Orchestrator | 0 | 0 | 0 | - | - | Pending | Deletion of redundant tests |
 | Sprint 3: Unit tests | Not Started | Test-writer (Unit) | 0 | 0 | 0 | - | - | Pending | Fast, isolated logic tests |
 | Sprint 4: Integration tests | Not Started | Test-writer (Integration) | 0 | 0 | 0 | - | - | Pending | Real local DB and contract checks |
 | Sprint 5: System tests | Not Started | Test-writer (System) | 0 | 0 | 0 | - | - | Pending | Real HTTP API and browser flows |

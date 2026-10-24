@@ -9,7 +9,7 @@ Sprint status and metrics for the test suite rebuild (Stage 1: local).
 | Sprint 2: Prune | Done | Orchestrator | 0 | 4 | 73 | 66% | 83.52s | Passed | Pruned 73 redundant tests and dead benchmark scripts. Coverage increased from 47% to 66% with 100% pass rate. |
 | Sprint 3: Unit tests | Done | Test-writer (Unit) | 117 | 2 | 0 | 67% | 25.94s | Passed | 86 backend unit tests in test/unit/ and 31 frontend unit tests in frontend/src/ added. 100% clean exit. |
 | Sprint 4: Integration tests | Done | Test-writer (Integration) | 17 | 0 | 0 | 67% | 24.58s | Passed | Real local DB integration, trigger limit enforcement, telemetry aggregation, UI contract rendering, and anti-drift validation verified. |
-| Sprint 5: System tests | Not Started | Test-writer (System) | 0 | 0 | 0 | - | - | Pending | Real HTTP API and browser flows |
+| Sprint 5: System tests | Done | Test-writer (System) | 12 | 0 | 0 | 67% | 29.78s | Passed | 9 backend system tests in test/system/ and 3 fullstack Playwright E2E browser flows in frontend/e2e/ added. 100% clean exit. |
 | Sprint 6: Regression tests | Not Started | Test-writer (Regression) | 0 | 0 | 0 | - | - | Pending | Git bug history and critical smoke |
 | Sprint 7: Performance tests | Not Started | Test-writer (Performance) | 0 | 0 | 0 | - | - | Pending | Configurable latency and load |
 | Sprint 8: Non-functional tests | Not Started | Test-writer (Non-functional) | 0 | 0 | 0 | - | - | Pending | Security, reliability, accessibility |

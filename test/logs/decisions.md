@@ -64,3 +64,17 @@ This document records the architectural decisions, classifications (keep, merge,
 - Created `frontend/src/test/apiContract.test.ts` (7 tests) verifying UI components (`KeyListTable`, `KeyQuotaBanner`, `LlmUsageView`, `TelemetryTable`) render canonical fixtures correctly without runtime errors.
 - Created `test/integration/test_frontend_contract_drift.py` (6 tests) parsing TypeScript contract mocks in Python and validating against real backend Pydantic models to guarantee schemas cannot silently drift.
 
+
+### Sprint 5: System Tests
+- Implemented backend HTTP system test suite `test/system/test_api_system.py` (9 tests) using `httpx.AsyncClient` against `backend.main:app`:
+  - Journey 1: `POST /recommend` with valid developer API key (HTTP 200, stripped candidate cards, no internal score leakage, no extra telemetry).
+  - Journey 2: `POST /admin/recommend` with admin API key (HTTP 200, full model scores, execution timings, and total_ms).
+  - Journey 3: Security & error matrix testing missing key (401), invalid key (401), missing JWT on `/dev/keys` (401), and non-admin on `/admin/*` (403).
+  - Journey 4: Streaming chat on `POST /chat` with Server-Sent Events stream validation (`metadata`, `token`, and `done` events).
+  - Journey 5: Developer key lifecycle (`POST /dev/keys` with 201 Created and `Cache-Control: no-store`, `GET /dev/keys`, `DELETE /dev/keys/{id}` with 204 No Content).
+  - Journey 6: Admin telemetry endpoints (`GET /admin/llm-usage/daily` returning 200 list and `GET /admin/llm-usage/current-budget` returning 200 layer budget mapping).
+- Configured Playwright runtime in `frontend/playwright.config.ts` targeting headless Chromium and Vite dev server.
+- Authored fullstack browser automation suite in `frontend/e2e/critical_flows.spec.ts` (3 flows):
+  - Flow 1: Conversational discovery flow (`/chat`) validating query input, candidate card rendering, and concierge pitch streaming.
+  - Flow 2: Developer portal self-service flow (`/developers`) validating quota banner and key management table.
+  - Flow 3: API reference and interactive code sample exploration (`/docs`) validating language tab switching (cURL, Python, Node.js).

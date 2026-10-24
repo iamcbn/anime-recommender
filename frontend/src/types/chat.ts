@@ -1,5 +1,18 @@
 // frontend/src/types/chat.ts
 
+export type StudioItem =
+  | string
+  | {
+      id?: number;
+      name?: string;
+      isMain?: boolean;
+      node?: {
+        id?: number;
+        name?: string;
+        isAnimationStudio?: boolean;
+      };
+    };
+
 export interface AnimeCandidate {
   id: number;
   title_userPreferred?: string;
@@ -17,7 +30,7 @@ export interface AnimeCandidate {
     medium?: string | null;
   };
   genres?: string[];
-  studios?: string[];
+  studios?: StudioItem[];
   averageScore?: number | null;
   meanScore?: number | null;
   seasonYear?: number | null;

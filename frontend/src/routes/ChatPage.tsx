@@ -16,6 +16,7 @@ import { ChatInput } from '../components/chat/ChatInput';
 import { ConciergePitch } from '../components/chat/ConciergePitch';
 import { AnimeCard } from '../components/chat/AnimeCard';
 import { PreferenceDrawer } from '../components/chat/PreferenceDrawer';
+import { ErrorBoundary } from '../components/common/ErrorBoundary';
 
 export const ChatPage: React.FC = () => {
   const [conversationState, setConversationState] = useState<ConversationState>('idle');
@@ -270,37 +271,39 @@ export const ChatPage: React.FC = () => {
 
         {/* Anime Discovery Cards Section */}
         {candidates.length > 0 && (
-          <div className="space-y-4 pt-2">
-            <div className="flex items-center justify-between px-1">
-              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                <Film className="w-4 h-4 text-brand" />
-                <span>Recommended Candidates ({candidates.length})</span>
-                {activeQuery && (
-                  <span className="font-normal normal-case text-slate-400 truncate max-w-xs">
-                    for &ldquo;{activeQuery}&rdquo;
-                  </span>
+          <ErrorBoundary resetKeys={[candidates]}>
+            <div className="space-y-4 pt-2">
+              <div className="flex items-center justify-between px-1">
+                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                  <Film className="w-4 h-4 text-brand" />
+                  <span>Recommended Candidates ({candidates.length})</span>
+                  {activeQuery && (
+                    <span className="font-normal normal-case text-slate-400 truncate max-w-xs">
+                      for &ldquo;{activeQuery}&rdquo;
+                    </span>
+                  )}
+                </h2>
+                {isStreaming && (
+                  <div className="flex items-center gap-1.5 text-xs text-brand font-medium">
+                    <span className="inline-block w-2 h-2 rounded-full bg-brand animate-ping" />
+                    <span>Streaming commentary...</span>
+                  </div>
                 )}
-              </h2>
-              {isStreaming && (
-                <div className="flex items-center gap-1.5 text-xs text-brand font-medium">
-                  <span className="inline-block w-2 h-2 rounded-full bg-brand animate-ping" />
-                  <span>Streaming commentary...</span>
-                </div>
-              )}
-            </div>
+              </div>
 
-            {/* Candidate Card Grid (<1.5s TTFT Mount) */}
-            <div className="grid grid-cols-1 gap-4">
-              {candidates.map((anime) => (
-                <AnimeCard
-                  key={anime.id}
-                  anime={anime}
-                  onMoreLikeThis={handleMoreLikeThis}
-                  isHighlighted={highlightedAnimeId === anime.id || hoveredAnimeId === anime.id}
-                />
-              ))}
+              {/* Candidate Card Grid (<1.5s TTFT Mount) */}
+              <div className="grid grid-cols-1 gap-4">
+                {candidates.map((anime) => (
+                  <AnimeCard
+                    key={anime.id}
+                    anime={anime}
+                    onMoreLikeThis={handleMoreLikeThis}
+                    isHighlighted={highlightedAnimeId === anime.id || hoveredAnimeId === anime.id}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
+          </ErrorBoundary>
         )}
 
         {/* Empty State / Welcome Guide when Idle and No Candidates */}

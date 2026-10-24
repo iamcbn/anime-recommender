@@ -11,6 +11,29 @@ export interface AnimeCardProps {
   isHighlighted?: boolean;
 }
 
+/**
+ * Safely extracts a displayable studio name string from heterogeneous studio data.
+ * AniList schemas may return raw strings or nested objects containing node.name or name.
+ */
+export const getStudioName = (studio: unknown): string | null => {
+  if (!studio) return null;
+  if (typeof studio === 'string') {
+    const trimmed = studio.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof studio === 'object') {
+    const obj = studio as Record<string, unknown>;
+    const node = obj.node as Record<string, unknown> | undefined;
+    if (node && typeof node.name === 'string' && node.name.trim().length > 0) {
+      return node.name.trim();
+    }
+    if (typeof obj.name === 'string' && obj.name.trim().length > 0) {
+      return obj.name.trim();
+    }
+  }
+  return null;
+};
+
 export const AnimeCard: React.FC<AnimeCardProps> = ({
   anime,
   onMoreLikeThis,
@@ -49,6 +72,10 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
   const score = anime.averageScore ?? anime.meanScore;
   const format = (anime.format || 'TV').toUpperCase();
   const genres = anime.genres || [];
+  const studioName =
+    anime.studios && anime.studios.length > 0
+      ? anime.studios.map(getStudioName).find((name): name is string => Boolean(name)) || null
+      : null;
 
   const getScoreVariant = (val: number): 'success' | 'brand' | 'warning' | 'neutral' => {
     if (val >= 80) return 'success';
@@ -150,9 +177,9 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
                   {anime.season ? `${anime.season.toLowerCase()} ` : ''}{anime.seasonYear}
                 </span>
               )}
-              {anime.studios && anime.studios.length > 0 && (
+              {studioName && (
                 <span className="truncate max-w-[150px]">
-                  by {anime.studios[0]}
+                  by {studioName}
                 </span>
               )}
             </div>

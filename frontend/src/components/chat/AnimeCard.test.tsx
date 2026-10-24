@@ -181,4 +181,67 @@ describe('AnimeCard component', () => {
     expect(mockOnMoreLikeThis).toHaveBeenCalledTimes(1);
     expect(mockOnMoreLikeThis).toHaveBeenCalledWith('Code Geass');
   });
+
+  it('safely renders studios whether provided as strings or nested objects', () => {
+    /**
+     * Verifies that AnimeCard safely extracts studio names from both primitive strings
+     * and AniList nested object structures without throwing React child errors.
+     */
+    // Scenario 1: Primitive string array
+    const animeWithStringStudio: AnimeCandidate = {
+      id: 50,
+      title_english: 'Hunter x Hunter',
+      studios: ['Madhouse'],
+    };
+    const { unmount: unmount1 } = render(
+      <AnimeCard anime={animeWithStringStudio} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+    expect(screen.getByText('by Madhouse')).toBeInTheDocument();
+    unmount1();
+
+    // Scenario 2: AniList nested object structure with node.name
+    const animeWithNestedObjectStudio: AnimeCandidate = {
+      id: 51,
+      title_english: 'Cowboy Bebop',
+      studios: [
+        {
+          id: 1,
+          isMain: true,
+          node: {
+            id: 14,
+            name: 'Sunrise',
+            isAnimationStudio: true,
+          },
+        },
+      ],
+    };
+    const { unmount: unmount2 } = render(
+      <AnimeCard anime={animeWithNestedObjectStudio} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+    expect(screen.getByText('by Sunrise')).toBeInTheDocument();
+    unmount2();
+
+    // Scenario 3: Object structure with direct name field
+    const animeWithDirectObjectStudio: AnimeCandidate = {
+      id: 52,
+      title_english: 'Violet Evergarden',
+      studios: [{ name: 'Kyoto Animation' }],
+    };
+    const { unmount: unmount3 } = render(
+      <AnimeCard anime={animeWithDirectObjectStudio} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+    expect(screen.getByText('by Kyoto Animation')).toBeInTheDocument();
+    unmount3();
+
+    // Scenario 4: Empty or invalid studio entries
+    const animeWithEmptyStudio: AnimeCandidate = {
+      id: 53,
+      title_english: 'Unknown Studio Anime',
+      studios: [{} as any, ''],
+    };
+    render(
+      <AnimeCard anime={animeWithEmptyStudio} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+    expect(screen.queryByText(/^by /i)).not.toBeInTheDocument();
+  });
 });

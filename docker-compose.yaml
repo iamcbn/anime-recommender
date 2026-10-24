@@ -7,22 +7,22 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB: ${DB_NAME:-anime_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       OPENAI_API_KEY: ${OPENAI_API_KEY} 
     ports:
-      - "${DB_PORT}:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-anime_db}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   # ──────────────────────────────────────────────
-  # Data Pipeline  (one-shot: fetch → preprocess → embed → load)
+  # Data Pipeline (one-shot: fetch -> preprocess -> embed -> load)
   # ──────────────────────────────────────────────
   data_pipeline:
     build:
@@ -33,9 +33,9 @@ services:
         condition: service_healthy
     environment:
       DB_HOST: db
-      DB_PORT: ${DB_PORT}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-anime_db}
+      DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD}
       KAGGLE_USERNAME: ${KAGGLE_USERNAME}
       KAGGLE_KEY: ${KAGGLE_KEY}
@@ -48,14 +48,14 @@ services:
     restart: "no"
 
   # ──────────────────────────────────────────────
-  # RAG Pipeline / FastAPI
+  # Backend Gateway / FastAPI (CPU Profile)
   # ──────────────────────────────────────────────
-
-  # Default CPU service (runs automatically)
   rag_pipeline:
     build:
       context: .
       dockerfile: backend/rag_pipeline/Dockerfile
+      network: host
+    command: ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       db:
         condition: service_healthy
@@ -63,23 +63,38 @@ services:
         condition: service_completed_successfully
     environment:
       DB_HOST: db
-      DB_PORT: ${DB_PORT}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-anime_db}
+      DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD}
       MY_API_KEY: ${MY_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY} 
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      KEY_PEPPER: ${KEY_PEPPER:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000}
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
-      - models:/app/models
+      - models:/app/backend/models
+    profiles:
+      - cpu
     restart: unless-stopped
 
-  # Optional GPU-accelerated service (only runs if you use the "gpu" profile) 
+  # ──────────────────────────────────────────────
+  # Backend Gateway / FastAPI (GPU Profile)
+  # ──────────────────────────────────────────────
   rag_pipeline_gpu:
     build:
       context: .
       dockerfile: backend/rag_pipeline/Dockerfile.gpu
+      network: host
+    command: ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       db:
         condition: service_healthy
@@ -87,16 +102,25 @@ services:
         condition: service_completed_successfully
     environment:
       DB_HOST: db
-      DB_PORT: ${DB_PORT}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-anime_db}
+      DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD}
       MY_API_KEY: ${MY_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY} 
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      KEY_PEPPER: ${KEY_PEPPER:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000}
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
     ports:
       - "8001:8000"
     volumes:
-      - models:/app/models
+      - models:/app/backend/models
     profiles:
       - gpu
     deploy:
@@ -107,7 +131,6 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
-
 
   # ──────────────────────────────────────────────
   # Frontend Portal (Developer & Admin UI)
@@ -121,7 +144,7 @@ services:
     environment:
       - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://your-project.supabase.co}
       - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-placeholder-anon-key}
-      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8001}
     volumes:
       - ./frontend:/app
       - /app/node_modules

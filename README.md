@@ -65,7 +65,7 @@ Public inference endpoint. Returns clean anime cards only (internal model scores
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `query` | string | Yes | — | Minimum 2 characters |
+| `query` | string | Yes | - | Minimum 2 characters |
 | `top_k` | int | No | 20 | Number of recommendations to return |
 | `allow_adult` | bool | No | false | Whether to include adult-rated anime |
 
@@ -124,7 +124,22 @@ npm install
 npm run dev
 ```
 
-The portal runs on `http://localhost:5173` and connects to the backend gateway at `http://localhost:8000`.
+The portal runs on `http://localhost:5173` and connects to the backend gateway at `http://localhost:8001`.
+
+---
+
+## Architecture: Dual Entrypoints
+
+This repository maintains two specialised entrypoints tailored for production serving and benchmark evaluation:
+
+1. **Production & Docker Gateway (`backend/main.py`)**:
+   - The primary gateway serving the Modal serverless CPU/GPU deployment, local development, and full-stack Docker.
+   - Exposes the full application route tree: conversational discovery streaming (`POST /chat` with Server-Sent Events), public inference (`POST /recommend`), developer self-service key management (`/dev/keys`), and admin LLM usage telemetry (`/admin/llm-usage/*`).
+   - Configures dynamic CORS middleware, secret redaction, and asynchronous PostgreSQL telemetry logging.
+
+2. **Standalone RAG Microservice (`backend/rag_pipeline/main.py`)**:
+   - A lightweight, unencumbered inference microservice exposing only `/` and `/recommend`.
+   - Used for isolated benchmark evaluations, offline accuracy auditing, and standalone integration testing without authentication, Redis rate limiting, or gateway middleware overhead.
 
 ---
 
@@ -143,56 +158,123 @@ Create a `.env` file in the project root:
 
 ```env
 MY_API_KEY=your_secret_api_key
+ADMIN_API_KEY=your_admin_secret_key
 
-DB_HOST=your_db_host
-DB_PORT=your_db_port
-DB_NAME=your_db_name
-DB_USER=your_db_user
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=anime_db
+DB_USER=postgres
 DB_PASSWORD=your_db_password
-
-MODELS_DIR=/app/models
 
 KAGGLE_USERNAME=your_kaggle_username
 KAGGLE_KEY=your_kaggle_api_key
 HF_TOKEN=your_huggingface_token
+OPENAI_API_KEY=your_openai_api_key
+
+COMPOSE_PROFILES=cpu
 ```
 
-Both services read from this file. No `database.ini` is needed.
+---
 
-### Running the Data Pipeline
+## Running the Application
+
+### Option 1: Full-Stack Docker (CPU - Runs on Any Laptop)
+
+The default configuration starts PostgreSQL + pgvector, the Backend Gateway on port `8001`, and the Frontend Portal on port `5173`. No host dependencies (such as Python or Node.js) are required:
 
 ```bash
-cd backend
-python -m data_pipeline.run_pipeline
+docker compose up -d
 ```
 
-The pipeline exits early with a message if the dataset is already up to date.
-
-### Running the API
+Verify service status:
 
 ```bash
-cd backend
-uvicorn rag_pipeline.main:app --reload
+docker compose ps
 ```
 
-### Running with Docker
+The services are accessible at:
+- **Frontend Portal**: `http://localhost:5173`
+- **Backend Gateway**: `http://localhost:8001` (API documentation at `http://localhost:8001/docs`)
+- **Database**: `localhost:5432`
 
-By default, the `docker-compose.yaml` runs on CPU so anyone can clone and run without GPU drivers:
+To shut down:
 
 ```bash
-docker compose up
+docker compose down
 ```
 
-**GPU Acceleration (Optional):**
-If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed:
+### Option 2: Full-Stack Docker (GPU - NVIDIA Container Toolkit)
+
+If your host machine has an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, run the GPU-accelerated gateway on port `8001`:
 
 ```bash
-docker compose --profile gpu up
+docker compose --profile gpu up -d rag_pipeline_gpu
 ```
 
-The API endpoints will be available at:
-- `http://localhost:8000` — CPU (Standard)
-- `http://localhost:8001` — GPU (Accelerated)
+The gateway automatically detects CUDA and initialises PyTorch on the GPU while maintaining identical route and CORS behaviour.
+
+### Option 3: Hybrid Local Development
+
+Run the PostgreSQL database in Docker while developing the backend and frontend locally:
+
+1. **Start the database container:**
+
+   ```bash
+   docker compose up -d db
+   ```
+
+2. **Start the Backend Gateway on port 8001:**
+
+   > **Note for Windows:** Set `PYTHONUTF8=1` to prevent Unicode encoding errors with emoji logs in standard Windows consoles (`cp1252`).
+
+   ```powershell
+   # Windows PowerShell
+   $env:PYTHONUTF8 = "1"
+   python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload
+
+   # Linux / macOS Bash
+   export PYTHONUTF8=1
+   python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload
+   ```
+
+3. **Start the Frontend Portal on port 5173:**
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+### Standalone Microservice (Isolated Benchmarks)
+
+To launch the isolated RAG microservice without the full gateway:
+
+```powershell
+# Windows PowerShell
+$env:PYTHONPATH = "backend"
+python -m uvicorn rag_pipeline.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Linux / macOS Bash
+PYTHONPATH=backend python -m uvicorn rag_pipeline.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## Admin Observability
+
+An authenticated Admin user has access to comprehensive system telemetry:
+
+1. **Real-Time Telemetry Logs (`/admin/telemetry`)**:
+   - Requires Supabase authentication where the user possesses `app_metadata.role = 'admin'`.
+   - PostgREST queries `telemetry.recommendation_logs` protected by database Row Level Security (RLS).
+   - Inspect individual query latencies, vector similarity scores, Cross-Encoder reranker scores, and client metadata.
+
+2. **LLM Token Usage & Budget Metrics (`/admin/llm-usage`)**:
+   - Queries `GET /admin/llm-usage/daily` and `GET /admin/llm-usage/current-budget` on the backend gateway (`:8001`).
+   - Accessible via an admin Supabase session or an admin API key passed in the `Authorization: Bearer <key>` header (configured via `ADMIN_API_KEY`).
+   - Displays real-time token burn rates, estimated USD costs, cache hit ratios, and budget ceiling consumption across pipeline layers (`nli`, `retrieval`, and `presentation`).
+
+---
 
 ### Deploying to Modal
 

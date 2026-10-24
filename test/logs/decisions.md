@@ -108,3 +108,15 @@ This document records the architectural decisions, classifications (keep, merge,
 - Implemented frontend Navigation Timing suite `frontend/e2e/performance.spec.ts` (3 tests):
   - Measured W3C Navigation Timing API duration across `/chat` (1173.70ms), `/developers` (589.00ms), and `/docs` (895.70ms) against the `PERF_FRONTEND_NAV_MS` threshold (3000ms).
   - Added repository-level `playwright.config.js` to enable running Playwright directly from the repository root.
+
+### Sprint 8: Non-Functional Tests
+- Implemented comprehensive security, reliability, resilience, and configuration test suite `test/non_functional/test_security_and_reliability.py` (46 tests):
+  - `TestAuthenticationAndAuthorisationMatrix` (10 tests): Public discovery vs developer key vs admin key vs Supabase JWT matrix; role elevation prevention; token tampering rejection (`alg=none`, forged RS256 signature, expired tokens, stale session rejection).
+  - `TestInputValidationAndInjectionDefense` (19 tests): Parameterized prompt injection and jailbreak vector defense (DAN, instruction override, system tags); SQL injection mitigation across recommendation, developer keys, and administrative endpoints; input boundary limits (< 2 chars, > 500 chars).
+  - `TestSecurityHeadersAndSecretLeakage` (8 tests): `Cache-Control: no-store` and `Pragma: no-cache` on key creation; regex-based secret redaction (`ar_live_`, `sk-`, Bearer) in exceptions and loggers; CORS middleware header evaluation.
+  - `TestReliabilityAndDependencyDegradation` (3 tests): Database connection pool exhaustion fail-closed handling with HTTP 503; telemetry table outage graceful degradation returning `[]` with HTTP 200; IP brute-force rate limiter lockout returning HTTP 429 with `Retry-After`.
+  - `TestConfigurationAndSafetyGuards` (6 tests): Conftest safety guard enforcement aborting on remote production hosts (`supabase.co`, `neon.tech`, `aws-1-eu-north-1`); RAG configuration defaults, dynamic SSL mode detection, and explicit override priority.
+- Implemented frontend Playwright accessibility and UI resilience suite `frontend/e2e/non_functional.spec.ts` (3 tests):
+  - Accessibility check on `/chat`: textarea accessible labelling, suggestion button focusability, keyboard Enter trigger.
+  - Accessibility check on `/developers`: table column header semantics (`<thead>`, `<th>`), modal dialog container (`role="dialog"`, `aria-modal="true"`), and `Escape` key dismissal.
+  - Accessibility check on `/docs`: code snippet tabs keyboard navigation, ARIA tab roles, copy button accessibility.

@@ -12,5 +12,5 @@ Sprint status and metrics for the test suite rebuild (Stage 1: local).
 | Sprint 5: System tests | Done | Test-writer (System) | 12 | 0 | 0 | 67% | 29.78s | Passed | 9 backend system tests in test/system/ and 3 fullstack Playwright E2E browser flows in frontend/e2e/ added. 100% clean exit. |
 | Sprint 6: Regression tests | Done | Test-writer (Regression) | 12 | 0 | 0 | 67% | 15.18s | Passed | 9 bug regression tests and 3 critical path smoke tests in test/regression/test_past_regressions.py. 100% clean exit. |
 | Sprint 7: Performance tests | Done | Test-writer (Performance) | 9 | 0 | 0 | 67% | 21.89s | Passed | 6 backend benchmarks in test/performance/ and 3 frontend Navigation Timing tests in frontend/e2e/performance.spec.ts. 100% clean exit. |
-| Sprint 8: Non-functional tests | Not Started | Test-writer (Non-functional) | 0 | 0 | 0 | - | - | Pending | Security, reliability, accessibility |
+| Sprint 8: Non-functional tests | Done | Test-writer (Non-functional) | 49 | 0 | 0 | 67% | 20.73s | Passed | 46 security, reliability, resilience, and config tests in test/non_functional/ and 3 accessibility E2E tests in frontend/e2e/. 100% clean exit. |
 | Sprint 9: Consolidation and Stage 2 readiness | Not Started | Orchestrator, Independent Verifier | 0 | 0 | 0 | - | - | Pending | Single entry point, runbook, verification |

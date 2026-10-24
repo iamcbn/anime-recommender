@@ -54,14 +54,19 @@ def pytest_configure(config):
     modal_api_url = os.environ.get("MODAL_API_URL", "").strip()
     api_base_url = os.environ.get("API_BASE_URL", "").strip()
 
+    test_env = os.environ.get("TEST_ENV", "local").strip().lower()
+    allowed_hosts = {"localhost", "127.0.0.1", "testserver"}
+    if test_env in ("stage2_cloud", "ci", "docker_test"):
+        stage2_hosts = os.environ.get("STAGE2_ALLOWED_HOSTS", "test-api,api-test,test-db,backend-test").lower().split(",")
+        allowed_hosts.update(h.strip() for h in stage2_hosts if h.strip())
+
     for url_val, var_name in [(modal_api_url, "MODAL_API_URL"), (api_base_url, "API_BASE_URL")]:
         if url_val:
             parsed = urlparse(url_val)
             hostname = (parsed.hostname or "").lower()
-            allowed_hosts = {"localhost", "127.0.0.1", "testserver"}
             if hostname and hostname not in allowed_hosts:
                 pytest.exit(
                     f"SAFETY GUARD REFUSAL: Configured {var_name} ({url_val}) targets remote host "
-                    f"'{hostname}'. Tests must target local services (localhost, 127.0.0.1, or testserver).",
+                    f"'{hostname}'. Tests must target local or authorized Stage 2 test services.",
                     returncode=3,
                 )

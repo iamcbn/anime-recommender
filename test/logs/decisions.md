@@ -120,3 +120,19 @@ This document records the architectural decisions, classifications (keep, merge,
   - Accessibility check on `/chat`: textarea accessible labelling, suggestion button focusability, keyboard Enter trigger.
   - Accessibility check on `/developers`: table column header semantics (`<thead>`, `<th>`), modal dialog container (`role="dialog"`, `aria-modal="true"`), and `Escape` key dismissal.
   - Accessibility check on `/docs`: code snippet tabs keyboard navigation, ARIA tab roles, copy button accessibility.
+
+### Sprint 9: Consolidation and Stage 2 Readiness
+- Consolidated all architectural layers and scopes under a single entry point runner `test/run_suite.py`:
+  - Supports `--layer` (`unit`, `integration`, `system`, `regression`, `smoke`, `performance`, `non_functional`).
+  - Supports `--scope` (`backend`, `frontend`, `fullstack`).
+  - Supports automated multi-iteration flakiness audits via `--repeat N`.
+  - Supports Stage 2 profile validation via `--stage2`.
+- Updated environment safety guard in `test/conftest.py` to support Stage 2 containerized hosts (`stage2_cloud`, `ci`, `docker_test`) via `STAGE2_ALLOWED_HOSTS` while maintaining strict zero-tolerance refusal for production hosts (`supabase.co`, `neon.tech`, `aws-1-eu-north-1`).
+- Authored canonical runbook `test/README.md` documenting test suite architecture, local prerequisites, CLI execution shortcuts, Stage 2 cloud environment variables, Docker Compose profile, and CI configuration.
+- Audited test codebase for em-dashes and converted historical leftovers to hyphens across all test modules.
+- Independent Verifier audit executed:
+  - 3 consecutive multi-tier test executions (1,686 test executions total across backend pytest, frontend vitest, and frontend Playwright).
+  - 0 failures, zero flakiness.
+  - Final statement coverage reached 67.61% (3,470 / 5,132 statements), exceeding the 66% threshold.
+  - Repository hygiene passed with 0 violations.
+  - Gate verdict: PASSED.

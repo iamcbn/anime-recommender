@@ -12,8 +12,8 @@ Flow:
      line to anime_results.jsonl (JSON Lines format).
 
 Environment variables required:
-  GEMINI_API_KEY      — Google AI Studio API key
-  MODAL_ADMIN_API_KEY / MODAL_ACCESS_TOKEN — Dedicated admin-role API key from GitHub Secrets
+  GEMINI_API_KEY      - Google AI Studio API key
+  MODAL_ADMIN_API_KEY / MODAL_ACCESS_TOKEN - Dedicated admin-role API key from GitHub Secrets
 """
 
 import json
@@ -55,7 +55,7 @@ poetic quiz description every single day for an existing anime.
 Rules:
 - CRITICAL: The ground_truth MUST be a real, officially released anime series or movie. \
 Do NOT invent a fictional anime title.
-- The description must be VAGUE and poetic — do NOT name the anime directly.
+- The description must be VAGUE and poetic - do NOT name the anime directly.
 - Vary the genre, tone, and style each time (shounen, slice-of-life, isekai, \
   psychological, mecha, romance, sports, horror, etc.).
 - Vary the difficulty: sometimes be very obscure and cryptic, other times \
@@ -69,7 +69,7 @@ Mix well-known hits with deeply obscure cult classics to keep it interesting.
 class AnimeQuizItem(BaseModel):
     genre: str = Field(description="The genre or vibe of the anime (e.g. shounen, isekai, psychological).")
     description: str = Field(description="A vague, creative anime description.")
-    difficulty: int = Field(description="An integer between 1 and 10 — 1 is very easy, 10 is very hard.")
+    difficulty: int = Field(description="An integer between 1 and 10: 1 is very easy, 10 is very hard.")
     ground_truth: str = Field(description="The exact anime title being secretly referred to.")
 
 def generate_prompt_via_gemini(api_key: str) -> dict:
@@ -224,7 +224,7 @@ def main() -> None:
         try:
             generated = generate_prompt_via_gemini(gemini_api_key)
         except Exception as exc:
-            print(f"ERROR: Gemini generation failed — {exc}", file=sys.stderr)
+            print(f"ERROR: Gemini generation failed - {exc}", file=sys.stderr)
             failed_runs += 1
             continue  # Skip to the next run instead of aborting all 4
 
@@ -243,7 +243,7 @@ def main() -> None:
         try:
             response = call_recommender_api(description, modal_access_token)
         except requests.exceptions.RequestException as exc:
-            print(f"ERROR: API request failed — {exc}", file=sys.stderr)
+            print(f"ERROR: API request failed - {exc}", file=sys.stderr)
             failed_runs += 1
             continue  # Skip to the next run instead of aborting all 4
 

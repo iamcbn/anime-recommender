@@ -579,7 +579,7 @@ class TestArchiverUnitWithFakeCursor:
         expected_key = "logs/year=2026/month=01/day=15/part-101-250.parquet"
         assert expected_key in storage.objects
 
-        # Confirm exact IDs sent to DELETE: [101, 105, 109, 250] — 103 was NEVER in the delete list
+        # Confirm exact IDs sent to DELETE: [101, 105, 109, 250] - 103 was NEVER in the delete list
         assert len(fake_conn.delete_batches_received) == 1
         deleted_id_list, _ = fake_conn.delete_batches_received[0]
         assert deleted_id_list == [101, 105, 109, 250]

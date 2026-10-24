@@ -42,3 +42,6 @@ CLAUDE.md
 AGENTS.md
 scripts/check_hygiene.py
 
+
+# Generated test reports
+test/reports/

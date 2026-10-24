@@ -47,7 +47,7 @@ try {
         exit 1
     }
 
-    Write-Host "`nDone! Check test/data/evaluation_report_v2.md for the results." -ForegroundColor Green
+    Write-Host "`nDone! Check test/data/evaluation_report.md for the results." -ForegroundColor Green
 } finally {
     Pop-Location
 }

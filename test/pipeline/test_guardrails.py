@@ -319,7 +319,7 @@ class TestDomainGuardrails(unittest.TestCase):
     # =========================================================================
 
     def test_confidence_assessment_high_confidence(self):
-        """Verifies confident retrieval when cross-encoder score is well above -6.5."""
+        """Verifies confident retrieval when cross-encoder score is well above -6.5 (list and DataFrame input)."""
         candidates = [
             {"id": 1, "title": "Steins;Gate", "cross_encoder_score": 4.52},
             {"id": 2, "title": "Erased", "cross_encoder_score": 1.20},
@@ -329,6 +329,15 @@ class TestDomainGuardrails(unittest.TestCase):
         self.assertTrue(assessment.is_confident)
         self.assertEqual(assessment.max_score, 4.52)
         self.assertEqual(assessment.fallback_message, "")
+
+        # Also verifies compatibility when results are passed as a pandas DataFrame
+        df = pd.DataFrame([
+            {"id": 1, "cross_encoder_score": 3.8},
+            {"id": 2, "cross_encoder_score": -2.1},
+        ])
+        df_assessment = DomainGuardrails.check_retrieval_confidence(df)
+        self.assertTrue(df_assessment.is_confident)
+        self.assertAlmostEqual(df_assessment.max_score, 3.8)
 
         # Test tuple unpacking
         is_conf, msg = assessment
@@ -366,16 +375,6 @@ class TestDomainGuardrails(unittest.TestCase):
         self.assertFalse(assessment.is_confident)
         self.assertIsNone(assessment.max_score)
         self.assertIn("couldn't find any anime", assessment.fallback_message.lower())
-
-    def test_confidence_assessment_with_pandas_dataframe(self):
-        """Verifies compatibility when results are passed as a pandas DataFrame."""
-        df = pd.DataFrame([
-            {"id": 1, "cross_encoder_score": 3.8},
-            {"id": 2, "cross_encoder_score": -2.1},
-        ])
-        assessment = DomainGuardrails.check_retrieval_confidence(df)
-        self.assertTrue(assessment.is_confident)
-        self.assertAlmostEqual(assessment.max_score, 3.8)
 
     def test_canonical_fallback_recommendations(self):
         """Verifies that canonical fallback recommendations are well-formed."""

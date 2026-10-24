@@ -62,24 +62,6 @@ class TestHeuristicSkipRule:
         assert should_bypass_nli("Give me something similar to Death Note", None) is True
         assert should_bypass_nli("anime not too slow or boring", []) is True
 
-    def test_turn_1_zero_llm_calls(self):
-        """Verifies 0 LLM calls are executed when bypass is triggered."""
-        mock_async_client = MagicMock()
-        mock_async_client.beta.chat.completions.parse = AsyncMock()
-
-        parser = NLIParser(async_client=mock_async_client)
-        query = "Cyberpunk anime like Akira"
-        history = None
-
-        if should_bypass_nli(query, history):
-            effective_query = query
-        else:
-            asyncio.run(parser.parse_async(query, history))
-            effective_query = "rewritten"
-
-        assert effective_query == query
-        mock_async_client.beta.chat.completions.parse.assert_not_called()
-
     def test_turn_2_conversational_cues_trigger_nli(self):
         """Cues indicating conversational references or negative constraints must run NLI."""
         history = [
@@ -197,15 +179,19 @@ class TestNLIParser:
             assert log_kwargs["session_id"] == "sess-test-456"
 
     @pytest.mark.asyncio
-    async def test_parse_async_timeout_fallback(self):
-        """Verifies 3.0s timeout is cleanly caught, returns raw query, and logs fallback."""
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error_to_raise",
+        [
+            asyncio.TimeoutError("Exceeded 3.0s timeout"),
+            Exception("OpenAI 500 Internal Server Error"),
+        ],
+        ids=["timeout", "api_exception"],
+    )
+    async def test_parse_async_fallback_on_errors(self, error_to_raise):
+        """Verifies 3.0s timeout and unexpected API exceptions return safe raw query without crashing."""
         mock_async_client = MagicMock()
-
-        async def slow_parse(**kwargs):
-            await asyncio.sleep(5.0)  # Exceeds 3.0s timeout
-            return MagicMock()
-
-        mock_async_client.beta.chat.completions.parse = slow_parse
+        mock_async_client.beta.chat.completions.parse = AsyncMock(side_effect=error_to_raise)
         parser = NLIParser(async_client=mock_async_client)
 
         raw_query = "Give me something similar but less gory"
@@ -213,7 +199,7 @@ class TestNLIParser:
             result = await parser.parse_async(
                 query=raw_query,
                 history=[{"role": "user", "content": "horror"}],
-                request_id="req-timeout-test",
+                request_id="req-fallback-test",
             )
 
             assert result.standalone_query == raw_query
@@ -225,27 +211,6 @@ class TestNLIParser:
             assert log_kwargs["layer"] == "nli"
             assert log_kwargs["status"] == "fallback"
             assert log_kwargs["prompt_tokens"] == 0
-            assert log_kwargs["request_id"] == "req-timeout-test"
-
-    @pytest.mark.asyncio
-    async def test_parse_async_exception_fallback(self):
-        """Verifies unexpected API exceptions return safe raw query without crashing."""
-        mock_async_client = MagicMock()
-        mock_async_client.beta.chat.completions.parse = AsyncMock(
-            side_effect=Exception("OpenAI 500 Internal Server Error")
-        )
-
-        parser = NLIParser(async_client=mock_async_client)
-        raw_query = "not mecha please"
-
-        with patch("backend.rag_pipeline.helper.nli_parser.log_llm_usage_event") as mock_log:
-            result = await parser.parse_async(query=raw_query, history=[{"role": "user", "content": "mecha"}])
-
-            assert result.standalone_query == raw_query
-            assert result.intent == "new_search"
-
-            mock_log.assert_called_once()
-            assert mock_log.call_args[1]["status"] == "fallback"
 
     def test_sync_parse_success_and_fallback(self):
         """Verifies synchronous parse method works with sync client."""

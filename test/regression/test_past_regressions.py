@@ -1,4 +1,4 @@
-"""
+﻿"""
 test/regression/test_past_regressions.py
 
 Regression test suite and critical path smoke set protecting against past regressions
@@ -16,34 +16,26 @@ Verification Matrix:
    - Commit d491610: Frontend environment security boundary against leaked backend secrets.
    - Bug BUG-001: Windows thread scheduling and event loop tick jitter documented via xfail.
 
-2. Critical Path Smoke Set:
-   - Fast public recommendation flow (POST /recommend) with stripped candidate cards and sub-second execution.
-   - Conversational chat streaming handshake (POST /chat) delivering SSE headers and immediate metadata.
-   - Instant perimeter rejection (HTTP 401) on unauthenticated calls to /dev/keys and /recommend.
+The critical path smoke checks (recommend flow, chat handshake, unauthenticated rejection)
+live in test/smoke and test/system and are not duplicated here.
 
 Conforms strictly to British English documentation standards without em-dashes.
 """
 
 import ast
 import asyncio
-import json
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 from unittest.mock import MagicMock, patch
 
-import httpx
-from httpx import ASGITransport
 import modal
 import pytest
 
-from backend.main import app
 from backend.rag_pipeline.config import config as get_rag_db_config
-from backend.rag_pipeline.helper.budget_guard import BudgetGuard, get_budget_key, budget_guard
-from backend.rag_pipeline.helper.guardrails import GuardrailResult
-from backend.rag_pipeline.helper.rate_limiter import rate_limiter
+from backend.rag_pipeline.helper.budget_guard import BudgetGuard, get_budget_key
 from backend.rag_pipeline.helper.retrieval import DatabaseManager
 from backend.rag_pipeline.helper.state_manager import StateManager
 from modal_deploy import get_gateway_secrets
@@ -52,65 +44,6 @@ from modal_deploy import get_gateway_secrets
 pytestmark = [pytest.mark.regression, pytest.mark.backend]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-# ---------------------------------------------------------------------------
-# SAMPLE FIXTURE DATA FOR HERMETIC TESTS
-# ---------------------------------------------------------------------------
-
-SAMPLE_REGRESSION_CANDIDATES: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "title_userPreferred": "Cowboy Bebop",
-        "title_romaji": "Cowboy Bebop",
-        "title_english": "Cowboy Bebop",
-        "genres": ["Action", "Sci-Fi"],
-        "averageScore": 89,
-        "popularity": 150000,
-        "format": "TV",
-        "episodes": 26,
-        "status": "FINISHED",
-        "description": "Bounty hunters in deep space chasing criminals across the solar system.",
-        "cross_encoder_score": 4.95,
-        "final_rrf_score": 0.88,
-    },
-    {
-        "id": 2,
-        "title_userPreferred": "Neon Genesis Evangelion",
-        "title_romaji": "Shinseiki Evangelion",
-        "title_english": "Neon Genesis Evangelion",
-        "genres": ["Action", "Mecha", "Psychological"],
-        "averageScore": 85,
-        "popularity": 140000,
-        "format": "TV",
-        "episodes": 26,
-        "status": "FINISHED",
-        "description": "Teenagers pilot giant bio-mechanical units to protect mankind.",
-        "cross_encoder_score": 4.52,
-        "final_rrf_score": 0.82,
-    },
-]
-
-
-def parse_sse_events(raw_sse: str) -> List[Dict[str, Any]]:
-    """Parses raw Server-Sent Events text into structured event objects."""
-    events = []
-    current_event: Optional[str] = None
-    for line in raw_sse.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("event:"):
-            current_event = line[len("event:"):].strip()
-        elif line.startswith("data:") and current_event:
-            raw_data = line[len("data:"):].strip()
-            try:
-                parsed_data = json.loads(raw_data)
-            except Exception:
-                parsed_data = raw_data
-            events.append({"event": current_event, "data": parsed_data})
-            current_event = None
-    return events
 
 
 # ===========================================================================
@@ -565,164 +498,3 @@ async def test_regression_bug_001_windows_event_loop_concurrency_jitter():
     assert max_lag_ms < 15.0, (
         f"Event loop wake-up lag ({max_lag_ms:.2f}ms) exceeded 15.0ms threshold (BUG-001)"
     )
-
-
-# ===========================================================================
-# 2. CRITICAL PATH SMOKE SET
-# ===========================================================================
-
-@pytest.mark.regression
-@pytest.mark.backend
-@pytest.mark.smoke
-@pytest.mark.asyncio
-async def test_regression_smoke_recommend_flow_fast(monkeypatch):
-    """
-    Hits POST /recommend with developer API key, verifies 200 OK, stripped
-    candidate cards, and sub-second execution.
-
-    Confirms that the primary recommendation endpoint sanitises candidate cards
-    by stripping internal ranking scores, excludes execution diagnostics, and completes
-    in well under one second during health and regression verification.
-    """
-    dev_key = "ar_live_regression_dev_key_1234567890"
-    monkeypatch.setenv("MY_API_KEY", dev_key)
-
-    budget_guard.reset()
-    rate_limiter.redis = None
-    rate_limiter.reset()
-
-    # Hermetic mock: returns sample candidates with internal ranking scores
-    async def _mock_async_rag(query, top_k=20, allow_adult=False):
-        return [dict(c) for c in SAMPLE_REGRESSION_CANDIDATES[:top_k]], {
-            "retrieval_ms": 10.0,
-            "rerank_ms": 12.0,
-        }
-
-    payload = {
-        "query": "space bounty hunters exploring solar systems",
-        "top_k": 2,
-        "allow_adult": False,
-    }
-    headers = {"Authorization": f"Bearer {dev_key}"}
-
-    transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        with patch("backend.main.async_rag_pipeline", side_effect=_mock_async_rag), \
-             patch("backend.telemetry.logger.log_recommendation_event"):
-
-            start_time = time.perf_counter()
-            response = await client.post("/recommend", json=payload, headers=headers)
-            duration_sec = time.perf_counter() - start_time
-
-    assert response.status_code == 200, f"Expected 200 OK, got {response.status_code}: {response.text}"
-    assert duration_sec < 1.0, f"Execution took {duration_sec:.3f}s; must be sub-second (< 1.0s)"
-
-    data = response.json()
-    assert data["query"] == payload["query"]
-    assert data["count"] == 2
-    assert len(data["results"]) == 2
-
-    # Verify that internal diagnostic scores are completely stripped from public responses
-    for card in data["results"]:
-        assert "id" in card
-        assert "title_userPreferred" in card
-        assert "cross_encoder_score" not in card, "Internal cross_encoder_score must be stripped"
-        assert "final_rrf_score" not in card, "Internal final_rrf_score must be stripped"
-
-    # Verify diagnostic containers are not leaked
-    assert "extra" not in data, "Public recommendation payload must not leak 'extra' container"
-    assert "timings" not in data, "Public recommendation payload must not leak 'timings'"
-
-
-@pytest.mark.regression
-@pytest.mark.backend
-@pytest.mark.smoke
-@pytest.mark.asyncio
-async def test_regression_smoke_chat_streaming_handshake(monkeypatch):
-    """
-    Hits POST /chat with query, verifies 200 OK, text/event-stream content type,
-    and immediate metadata emission.
-
-    Validates that the conversational SSE streaming handshake responds with HTTP 200,
-    attaches appropriate streaming headers including X-Session-ID, and emits the
-    initial metadata event delivering candidate recommendations.
-    """
-    from backend.rag_pipeline.orchestrator import orchestrator
-
-    budget_guard.reset()
-    rate_limiter.redis = None
-    rate_limiter.reset()
-
-    async def _mock_retrieval(query, top_k=5, allow_adult=False, seen_ids=None, include_metadata=True, request_id=None):
-        return [dict(c) for c in SAMPLE_REGRESSION_CANDIDATES[:top_k]], {"retrieval_ms": 10.0}
-
-    async def _mock_pitch(query, candidates, conversation_history=None, is_disconnected=None, request_id=None, session_id=None):
-        yield "Cowboy Bebop is a quintessential "
-        yield "space Western masterpiece."
-
-    payload = {
-        "query": "recommend a space western anime series",
-        "top_k": 2,
-        "allow_adult": False,
-    }
-
-    transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        with patch.object(orchestrator, "_retrieval_func", side_effect=_mock_retrieval), \
-             patch.object(orchestrator.synthesizer, "stream_pitch", side_effect=_mock_pitch), \
-             patch.object(orchestrator.guardrails, "validate_intent", return_value=GuardrailResult(True, "valid")), \
-             patch("backend.telemetry.logger.log_recommendation_event"):
-
-            response = await client.post("/chat", json=payload)
-
-    assert response.status_code == 200, f"Expected 200 OK, got {response.status_code}"
-    assert "text/event-stream" in response.headers.get("content-type", "")
-    assert "X-Session-ID" in response.headers, "X-Session-ID header must be emitted"
-
-    events = parse_sse_events(response.text)
-    assert len(events) >= 1, "At least one SSE event must be received"
-
-    event_names = [e["event"] for e in events]
-    assert "metadata" in event_names, "Stream must emit initial metadata event"
-
-    metadata_event = next(e for e in events if e["event"] == "metadata")
-    assert "candidates" in metadata_event["data"], "Metadata event must contain candidate anime cards"
-    assert len(metadata_event["data"]["candidates"]) == 2
-
-
-@pytest.mark.regression
-@pytest.mark.backend
-@pytest.mark.smoke
-@pytest.mark.asyncio
-async def test_regression_smoke_unauthenticated_rejection_fast():
-    """
-    Verifies missing credentials on /dev/keys and /recommend are rejected with 401
-    instantly before expensive computation.
-
-    Confirms that unauthenticated requests to protected endpoints are blocked at the
-    authentication boundary within sub-100ms execution times without invoking downstream
-    pipeline stages or database queries.
-    """
-    transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # 1. Unauthenticated POST /recommend
-        t0 = time.perf_counter()
-        recommend_response = await client.post("/recommend", json={"query": "test query prompt"})
-        recommend_elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-        assert recommend_response.status_code == 401
-        assert recommend_response.json()["error"]["code"] == "unauthorized"
-        assert recommend_elapsed_ms < 100.0, (
-            f"POST /recommend rejection took {recommend_elapsed_ms:.1f}ms; must be under 100ms"
-        )
-
-        # 2. Unauthenticated GET /dev/keys
-        t0 = time.perf_counter()
-        keys_response = await client.get("/dev/keys")
-        keys_elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-        assert keys_response.status_code == 401
-        assert keys_response.json()["error"]["code"] == "unauthorized"
-        assert keys_elapsed_ms < 100.0, (
-            f"GET /dev/keys rejection took {keys_elapsed_ms:.1f}ms; must be under 100ms"
-        )

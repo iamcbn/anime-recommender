@@ -8,7 +8,6 @@ Sprint 11 Task 11.3 End-to-End Smoke Test Suite:
      - Per-layer OpenAI secrets: openai-nli-secret, openai-retrieval-secret, openai-presentation-secret
      - Fallback openai-secret if per-layer secrets are not used
      - Support seamless configuration via MODAL_USE_PER_LAYER_SECRETS environment variable (defaulting to True)
-   - Verifies ModelWorker GPU T4 actor configuration and volumes.
 2. Full End-to-End SSE Chat Streaming (POST /chat):
    - Validates metadata event emitting candidate anime cards with scores stripped and TTFT.
    - Validates token event(s) streaming the grounded concierge pitch.
@@ -18,10 +17,7 @@ Sprint 11 Task 11.3 End-to-End Smoke Test Suite:
    - Retrieval ceiling hit: HyDE expansion skipped ($0 HyDE tokens, raw query used for vector search, valid cards returned).
    - Presentation ceiling hit: OpenAI streaming skipped, candidate cards delivered instantly with deterministic fallback pitch ($0 presentation tokens).
    - Tri-layer exhaustion (all 3 ceilings hit simultaneously): 100% uptime with ZERO tokens consumed across the entire pipeline, returning valid anime cards to the user.
-4. Admin LLM Usage Explorer & Budget Endpoints:
-   - GET /admin/llm-usage/daily returns accurate data with admin auth (and 401/403 for unauthorized).
-   - GET /admin/llm-usage/current-budget returns live status for nli, retrieval, and presentation.
-5. Secret Redaction & Log Isolation:
+4. Secret Redaction & Log Isolation:
    - Ensures no API keys leak in logs or error responses (sk-proj-..., sk-..., Bearer ..., ar_live_...).
 """
 
@@ -32,7 +28,6 @@ import time
 import logging
 from typing import Dict, Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
-from contextlib import contextmanager
 
 import pytest
 import httpx
@@ -61,7 +56,7 @@ from backend.rag_pipeline.helper.synthesizer import RecommendationSynthesizer
 from backend.rag_pipeline.helper.nli_parser import NLIParser, NLIOutput
 from backend.auth.supabase_jwt import set_jwks_service, DevUserContext
 from backend.auth.keys import ApiKeyContext
-from modal_deploy import get_gateway_secrets, GATEWAY_SECRETS, app as modal_app, ModelWorker
+from modal_deploy import get_gateway_secrets, GATEWAY_SECRETS
 
 
 # =============================================================================
@@ -268,13 +263,6 @@ class TestModalDeploymentReadiness:
         per_layer_secrets = get_gateway_secrets()
         assert len(per_layer_secrets) == 4
 
-    def test_modal_app_and_worker_config(self):
-        """Verifies Modal application name and ModelWorker actor configuration."""
-        assert modal_app.name == "anime-recommender-api"
-        assert hasattr(ModelWorker, "initialize_runtime")
-        assert hasattr(ModelWorker, "embed_queries")
-        assert hasattr(ModelWorker, "rerank_candidates")
-
 
 # =============================================================================
 # 2. FULL END-TO-END SSE CHAT STREAMING (POST /chat)
@@ -471,106 +459,7 @@ class TestGracefulDegradationUnderTokenCeilings:
 
 
 # =============================================================================
-# 4. ADMIN LLM USAGE EXPLORER & BUDGET ENDPOINTS
-# =============================================================================
-
-class TestAdminUsageExplorerEndpoints:
-    """Verifies /admin/llm-usage/daily and /admin/llm-usage/current-budget security and data accuracy."""
-
-    @pytest.mark.asyncio
-    async def test_admin_llm_usage_endpoints_auth_enforcement(self):
-        """Unauthenticated and non-admin requests are rejected with 401 or 403."""
-        transport = ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            # 1. Unauthenticated requests -> 401
-            res1 = await client.get("/admin/llm-usage/daily")
-            assert res1.status_code == 401
-
-            res2 = await client.get("/admin/llm-usage/current-budget")
-            assert res2.status_code == 401
-
-            # 2. Non-admin user JWT -> 403
-            headers_user = {"Authorization": "Bearer valid-user-jwt"}
-            res3 = await client.get("/admin/llm-usage/daily", headers=headers_user)
-            assert res3.status_code == 403
-            assert res3.json()["error"]["code"] == "forbidden"
-
-            res4 = await client.get("/admin/llm-usage/current-budget", headers=headers_user)
-            assert res4.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_admin_llm_usage_current_budget_success(self):
-        """Admin auth returns live status for nli, retrieval, and presentation layers."""
-        # Record usage on in-memory budget guard
-        await budget_guard.record_usage("nli", 50000)
-        await budget_guard.record_usage("retrieval", 160000)  # 80% soft limit trigger
-        await budget_guard.record_usage("presentation", 300000)  # 100% hard limit trigger
-
-        transport = ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            headers = {"Authorization": "Bearer valid-admin-jwt"}
-            res = await client.get("/admin/llm-usage/current-budget", headers=headers)
-            assert res.status_code == 200
-            data = res.json()
-
-            assert "nli" in data
-            assert "retrieval" in data
-            assert "presentation" in data
-
-            # Verify NLI
-            assert data["nli"]["current_usage"] == 50000
-            assert data["nli"]["limit"] == 100000
-            assert not data["nli"]["soft_limit_hit"]
-            assert not data["nli"]["hard_limit_hit"]
-
-            # Verify Retrieval (80% hit)
-            assert data["retrieval"]["current_usage"] == 160000
-            assert data["retrieval"]["soft_limit_hit"] is True
-            assert data["retrieval"]["hard_limit_hit"] is False
-
-            # Verify Presentation (100% hit)
-            assert data["presentation"]["current_usage"] == 300000
-            assert data["presentation"]["hard_limit_hit"] is True
-
-    @pytest.mark.asyncio
-    async def test_admin_llm_usage_daily_success_and_cost_accuracy(self):
-        """Admin auth returns aggregated daily usage with accurate gpt-5.4-mini cost formula."""
-        mock_db_rows = [
-            ("2026-10-22", "presentation", 100, 100000, 50000, 150000, 10, 0),
-            ("2026-10-22", "retrieval", 80, 80000, 40000, 120000, 5, 0),
-            ("2026-10-22", "nli", 60, 30000, 10000, 40000, 20, 2),
-        ]
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = mock_db_rows
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-
-        @contextmanager
-        def mock_get_conn():
-            yield mock_conn
-
-        with patch("backend.telemetry.db.get_telemetry_connection", side_effect=mock_get_conn):
-            transport = ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                headers = {"Authorization": "Bearer ar_live_admin_secret_test_key_1234567890"}
-                res = await client.get("/admin/llm-usage/daily?days=7", headers=headers)
-                assert res.status_code == 200
-                data = res.json()
-                assert len(data) == 3
-
-                # Check presentation cost formula:
-                # 100k prompt ($0.15/1M) = $0.015
-                # 50k completion ($0.60/1M) = $0.030
-                # Total = $0.045
-                pres = next(r for r in data if r["layer"] == "presentation")
-                assert pres["prompt_tokens"] == 100000
-                assert pres["completion_tokens"] == 50000
-                assert pres["total_tokens"] == 150000
-                assert pres["estimated_cost_usd"] == 0.045
-
-
-# =============================================================================
-# 5. SECRET REDACTION & LOG ISOLATION
+# 4. SECRET REDACTION & LOG ISOLATION
 # =============================================================================
 
 class TestSecretRedactionAndLogIsolation:

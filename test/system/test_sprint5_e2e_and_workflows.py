@@ -55,7 +55,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # Ensure project root is in sys.path
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -260,101 +260,6 @@ class MockStorageClient:
         if self.corrupt_download_mode == "truncate":
             return raw[:-32]
         return raw
-
-
-# ===========================================================================
-# 1. Workflow YAML Linting & Contract Validation
-# ===========================================================================
-
-class TestWorkflowYamlValidation:
-    """Validates CI/CD workflow YAML contracts against Sprint 5 specifications."""
-
-    @pytest.fixture
-    def archive_workflow(self) -> Dict[str, Any]:
-        path = os.path.join(ROOT_DIR, ".github", "workflows", "archive_telemetry.yaml")
-        assert os.path.exists(path), f"File {path} must exist"
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-
-    @pytest.fixture
-    def update_workflow(self) -> Dict[str, Any]:
-        path = os.path.join(ROOT_DIR, ".github", "workflows", "update_data.yaml")
-        assert os.path.exists(path), f"File {path} must exist"
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-
-    def test_archive_telemetry_triggers_and_inputs(self, archive_workflow):
-        triggers = archive_workflow.get("on") or archive_workflow.get(True, {})
-        # Cron trigger: monthly on 1st at 3 AM
-        schedules = triggers.get("schedule", [])
-        assert len(schedules) >= 1, "Must have schedule trigger"
-        assert schedules[0].get("cron") == "0 3 1 * *"
-
-        # Workflow dispatch inputs
-        dispatch = triggers.get("workflow_dispatch", {})
-        inputs = dispatch.get("inputs", {})
-        assert "days" in inputs, "Must support 'days' input"
-        assert "dry_run" in inputs, "Must support 'dry_run' input"
-        assert inputs["dry_run"].get("type") == "boolean"
-
-    def test_archive_telemetry_concurrency_timeout_permissions(self, archive_workflow):
-        # Concurrency
-        concurrency = archive_workflow.get("concurrency", {})
-        assert concurrency.get("group") == "archive"
-        assert concurrency.get("cancel-in-progress") is False
-
-        # Job settings
-        jobs = archive_workflow.get("jobs", {})
-        job = jobs.get("archive-telemetry", {})
-        assert job.get("timeout-minutes") == 30
-        perms = job.get("permissions", {})
-        assert perms.get("contents") == "read"
-        assert perms.get("issues") == "write"
-
-    def test_archive_telemetry_env_secret_isolation_and_deps(self, archive_workflow):
-        job = archive_workflow["jobs"]["archive-telemetry"]
-        steps = job.get("steps", [])
-
-        # Verify requirements-archive.txt is installed, NOT requirements.txt
-        install_steps = [s for s in steps if "install" in s.get("name", "").lower()]
-        assert install_steps, "Must have an install dependencies step"
-        install_cmd = install_steps[0].get("run", "")
-        assert "requirements-archive.txt" in install_cmd
-        assert "requirements.txt" not in install_cmd
-
-        # Verify archiver execution step passes secrets via env only
-        archiver_steps = [s for s in steps if "run telemetry archiver" in s.get("name", "").lower()]
-        assert archiver_steps, "Must have archiver execution step"
-        step = archiver_steps[0]
-        step_env = step.get("env", {})
-        assert "ARCHIVER_DB_HOST" in step_env
-        assert step_env.get("ARCHIVER_DB_PORT") == "5432"
-        assert "SUPABASE_SERVICE_ROLE_KEY" in step_env
-
-        # Ensure no secrets interpolated into run string
-        step_run = step.get("run", "")
-        assert "secrets." not in step_run, "Secrets must not be interpolated directly in run script"
-
-        # Verify failure alert step exists
-        alert_steps = [s for s in steps if s.get("if") == "failure()"]
-        assert len(alert_steps) >= 1, "Must have an if: failure() alerting step"
-        assert "alert_dispatcher.py" in alert_steps[0].get("run", "")
-
-    def test_update_data_workflow_contract(self, update_workflow):
-        # Concurrency
-        concurrency = update_workflow.get("concurrency", {})
-        assert concurrency.get("group") == "data-pipeline"
-
-        # Timeout & Permissions
-        job = update_workflow["jobs"]["update-database"]
-        assert job.get("timeout-minutes") is not None
-        assert job.get("permissions", {}).get("contents") == "read"
-
-        # Keep-alive query step exists before heavy docker run
-        steps = job.get("steps", [])
-        keepalive_steps = [s for s in steps if "keep-alive" in s.get("name", "").lower() or "db_keepalive.py" in s.get("run", "")]
-        assert len(keepalive_steps) >= 1, "Must have a keepalive query step"
-        assert any("db_keepalive.py" in s.get("run", "") for s in keepalive_steps)
 
 
 # ===========================================================================

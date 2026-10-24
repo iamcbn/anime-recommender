@@ -12,16 +12,14 @@ Sprint 11 Task 11.1 Verification Test Suite:
    - Verifies 80% soft limit warning trigger.
    - Verifies 100% hard limit ceiling trigger.
 4. NLI Graceful Degradation:
-   - When NLI budget is exceeded, orchestrator and NLIParser bypass query rewrite
-     and pass raw user query directly ($0 NLI tokens).
-5. Retrieval Graceful Degradation:
-   - When retrieval budget is exceeded, QueryGenerator skips HyDE expansion
-     and returns [user_query] directly ($0 HyDE tokens).
-6. Presentation Graceful Degradation:
+   - When NLI budget is exceeded, NLIParser bypasses query rewrite
+     and passes the raw user query directly ($0 NLI tokens).
+   - Orchestrator and QueryGenerator (HyDE) degradation are covered end-to-end in test_sprint11_smoke.py.
+5. Presentation Graceful Degradation:
    - When presentation budget is exceeded, RecommendationSynthesizer skips OpenAI
      streaming and yields deterministic fallback pitch ($0 presentation tokens).
    - Orchestrator delivers candidate anime cards in metadata event and fallback pitch in token events.
-7. Redis Timeout & Fallback Resilience:
+6. Redis Timeout & Fallback Resilience:
    - Redis operations exceeding 150ms timeout cleanly fall back to InMemoryBudgetStore.
    - Redis network exceptions (ConnectionError) fall back cleanly without raising 500 or crashing.
    - Test isolation via budget_guard.reset().
@@ -33,7 +31,7 @@ import time
 import asyncio
 import logging
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,8 +47,7 @@ from backend.rag_pipeline.helper.budget_guard import (
     DEFAULT_USAGE_KEY_TTL_SEC,
     DEFAULT_REDIS_TIMEOUT_SEC,
 )
-from backend.rag_pipeline.helper.nli_parser import NLIParser, NLIOutput
-from backend.rag_pipeline.helper.query_generator import QueryGenerator
+from backend.rag_pipeline.helper.nli_parser import NLIParser
 from backend.rag_pipeline.helper.synthesizer import RecommendationSynthesizer
 from backend.rag_pipeline.orchestrator import PipelineOrchestrator
 
@@ -74,11 +71,9 @@ class TestBudgetKeyFormatting:
         assert get_budget_key("nli", "2026-10-22") == "usage:nli:2026-10-22"
         assert get_budget_key("retrieval", "2026-10-22") == "usage:retrieval:2026-10-22"
         assert get_budget_key("presentation", "2026-10-22") == "usage:presentation:2026-10-22"
-
-    def test_key_structure_defaults_to_utc_today(self):
+        # Omitting the date defaults to today in UTC
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        key = get_budget_key("nli")
-        assert key == f"usage:nli:{today_utc}"
+        assert get_budget_key("nli") == f"usage:nli:{today_utc}"
 
     def test_invalid_layer_raises_value_error(self):
         with pytest.raises(ValueError) as excinfo:
@@ -227,79 +222,8 @@ class TestNLIGracefulDegradation:
         assert result.intent == "new_search"
         mock_async_client.beta.chat.completions.parse.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_orchestrator_bypasses_nli_when_budget_exceeded(self, monkeypatch):
-        monkeypatch.setenv("DAILY_TOKEN_LIMIT_NLI", "100")
-        budget_guard.reset()
-        await budget_guard.record_usage("nli", 100)
-
-        mock_nli_parser = MagicMock()
-        mock_nli_parser.parse_async = AsyncMock()
-
-        mock_retrieval = AsyncMock(return_value=([
-            {"id": 1, "title_userPreferred": "Akira", "averageScore": 85, "genres": ["Action"]}
-        ], {"retrieval_ms": 10.0}))
-
-        mock_synthesizer = MagicMock()
-        async def _mock_stream(*args, **kwargs):
-            yield "Great pick!"
-        mock_synthesizer.stream_pitch = MagicMock(side_effect=_mock_stream)
-
-        orchestrator = PipelineOrchestrator(
-            nli_parser=mock_nli_parser,
-            retrieval_func=mock_retrieval,
-            synthesizer=mock_synthesizer,
-        )
-
-        events = []
-        # Query contains conversational cues ("more like that") that would normally trigger NLI
-        async for chunk in orchestrator.stream_chat(
-            query="more like that",
-            conversation_history=[{"role": "user", "content": "Akira"}, {"role": "assistant", "content": "Akira pitch"}],
-        ):
-            events.append(chunk)
-
-        # NLI parser should NOT have been invoked because budget is exhausted
-        mock_nli_parser.parse_async.assert_not_called()
-
-        # Effective query in retrieval must be the raw query
-        assert mock_retrieval.called
-        call_kwargs = mock_retrieval.call_args[1]
-        assert call_kwargs["query"] == "more like that"
-
-
 # =============================================================================
-# PART 5: RETRIEVAL LAYER GRACEFUL DEGRADATION (HyDE BYPASS)
-# =============================================================================
-
-class TestRetrievalGracefulDegradation:
-    """Verifies HyDE is skipped and raw query returned when retrieval budget is exceeded."""
-
-    @pytest.mark.asyncio
-    async def test_query_generator_skips_hyde_when_budget_exceeded(self, monkeypatch):
-        monkeypatch.setenv("DAILY_TOKEN_LIMIT_RETRIEVAL", "200")
-        budget_guard.reset()
-
-        # Exhaust retrieval budget
-        await budget_guard.record_usage("retrieval", 200)
-        assert await budget_guard.is_budget_exceeded("retrieval")
-
-        mock_async_client = MagicMock()
-        mock_async_client.beta.chat.completions.parse = AsyncMock()
-
-        gen = QueryGenerator(client=MagicMock(), async_client=mock_async_client)
-        user_query = "dark psychological thriller anime"
-
-        queries = await gen.generate_async(user_query)
-
-        # Returns [user_query] directly ($0 spent)
-        assert queries == [user_query]
-        # AsyncOpenAI parse must NOT be called
-        mock_async_client.beta.chat.completions.parse.assert_not_called()
-
-
-# =============================================================================
-# PART 6: PRESENTATION LAYER GRACEFUL DEGRADATION
+# PART 5: PRESENTATION LAYER GRACEFUL DEGRADATION
 # =============================================================================
 
 class TestPresentationGracefulDegradation:
@@ -366,7 +290,7 @@ class TestPresentationGracefulDegradation:
 
 
 # =============================================================================
-# PART 7: REDIS TIMEOUT & FALLBACK STORE RESILIENCE
+# PART 6: REDIS TIMEOUT & FALLBACK STORE RESILIENCE
 # =============================================================================
 
 class TestRedisResilienceAndTimeoutFallback:

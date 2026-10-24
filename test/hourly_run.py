@@ -1,5 +1,5 @@
 """
-daily_run.py
+test/hourly_run.py
 
 Automated daily anime recommender test script.
 

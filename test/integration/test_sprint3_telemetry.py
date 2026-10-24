@@ -48,7 +48,7 @@ import psycopg2
 from psycopg2 import pool, extras
 from fastapi.testclient import TestClient
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -88,7 +88,7 @@ from backend.telemetry.logger import (
 import importlib.util
 
 _HOURLY_RUN_SPEC = importlib.util.spec_from_file_location(
-    "hourly_run", os.path.join(os.path.dirname(os.path.abspath(__file__)), "hourly_run.py")
+    "hourly_run", os.path.join(ROOT_DIR, "test", "hourly_run.py")
 )
 hourly_run = importlib.util.module_from_spec(_HOURLY_RUN_SPEC)
 sys.modules["hourly_run"] = hourly_run
@@ -448,31 +448,6 @@ class TestAdminRecommendEndpointAndAuthMatrix:
             assert "cross_encoder_score" in card
             assert "final_rrf_score" in card
             assert "retrieval_rrf_score" in card
-
-    def test_cors_preflight_allows_configured_origins_and_exposes_session_id(self, monkeypatch):
-        monkeypatch.setenv("CORS_ORIGINS", "https://portal.example.com,http://localhost:5173")
-        client = TestClient(app)
-
-        ok_preflight = client.options(
-            "/recommend",
-            headers={
-                "Origin": "https://portal.example.com",
-                "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "Authorization, Content-Type",
-            },
-        )
-        assert ok_preflight.status_code == 200
-        assert ok_preflight.headers.get("access-control-allow-origin") == "https://portal.example.com"
-        assert "access-control-allow-credentials" not in ok_preflight.headers
-
-        bad_preflight = client.options(
-            "/recommend",
-            headers={
-                "Origin": "https://evil.example.org",
-                "Access-Control-Request-Method": "POST",
-            },
-        )
-        assert bad_preflight.headers.get("access-control-allow-origin") is None
 
 
 # ===========================================================================

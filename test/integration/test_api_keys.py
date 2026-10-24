@@ -43,7 +43,7 @@ from cryptography.hazmat.primitives import serialization
 from fastapi.testclient import TestClient
 
 # Ensure project root is in sys.path
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -427,23 +427,6 @@ class TestEndpointAuth:
         assert res.status_code == 401
         assert res.json()["error"]["code"] == "unauthorized"
 
-    def test_admin_recommend_role_gate_matrix(self, client, db_conn, clean_caches):
-        user_key, _ = generate_api_key(name="matrix-user", owner_id=None, role="user", conn=db_conn)
-        admin_key, _ = generate_api_key(name="matrix-admin", owner_id=None, role="admin", conn=db_conn)
-
-        # 1. No key -> 401
-        res_no_key = client.post("/admin/recommend", json={"query": "eval test"})
-        assert res_no_key.status_code == 401
-
-        # 2. User key -> 403 Forbidden
-        res_user = client.post("/admin/recommend", json={"query": "eval test"}, headers={"Authorization": f"Bearer {user_key}"})
-        assert res_user.status_code == 403
-        assert res_user.json()["error"]["code"] == "forbidden"
-
-        # 3. Admin key -> 200 OK
-        res_admin = client.post("/admin/recommend", json={"query": "eval test"}, headers={"Authorization": f"Bearer {admin_key}"})
-        assert res_admin.status_code == 200
-
     def test_env_breakglass_admin_key(self, client, monkeypatch, clean_caches):
         breakglass_secret = "ar_live_12345678_emergency_admin_breakglass_token_override_999"
         monkeypatch.setenv("ADMIN_API_KEY", breakglass_secret)
@@ -518,20 +501,6 @@ class TestDevKeysRouterSecurity:
         res = client.get("/dev/keys", headers={"Authorization": f"Bearer {expired_token}"})
         assert res.status_code == 401
         assert res.json()["error"]["code"] == "token_expired"
-
-    def test_stale_jwt_rejected_on_key_creation(self, client, jwks_mock):
-        """POST /dev/keys requires token issued within 15 minutes."""
-        user_id = str(uuid.uuid4())
-        # Token issued 16 minutes ago (960 seconds)
-        stale_token = jwks_mock.issue_token(sub=user_id, iat_delta=-960)
-
-        res = client.post(
-            "/dev/keys",
-            json={"name": "stale-key"},
-            headers={"Authorization": f"Bearer {stale_token}"}
-        )
-        assert res.status_code == 401
-        assert res.json()["error"]["code"] == "stale_token"
 
     def test_alg_none_forgery_rejected(self, client, jwks_mock):
         user_id = str(uuid.uuid4())

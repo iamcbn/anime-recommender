@@ -106,6 +106,16 @@ pytest -m non_functional -v
 
 ---
 
+### E. Generated Reports and Operational Scripts
+
+`python test/run_suite.py` writes `test/reports/junit.xml` and `test/reports/coverage.xml`. These are generated and git-ignored; they are not committed.
+
+Non-pytest operational scripts:
+- `test/hourly_run.py`: synthetic Gemini-driven probe of the live API, run by `.github/workflows/hourly-recommendation.yaml`.
+- `test/run_eval.ps1`: local retrieval evaluation (`test/pipeline/evaluate_first_stage.py`), writing `test/data/evaluation_report.md` via `test/pipeline/generate_report.py`.
+
+---
+
 ## 4. Stage 2 Cloud Test Migration and Environment Profiles
 
 Stage 2 executes the identical test suite in an isolated cloud test environment (e.g. GitHub Actions, ephemeral Docker Compose, or Kubernetes test namespace). No new test code is written for Stage 2; all tests are environment-driven.

@@ -445,7 +445,7 @@ class TestDislikedGenresFiltering:
             # 104: KonoSuba (Adventure, Comedy, Fantasy) -> MUST remain
             payload = {
                 "query": "recommend great anime with gripping story",
-                "disliked_genres": ["Mecha", "Horror"],
+                "disliked_genres": ["mecha", "Horror"],
             }
             res = await client.post("/chat", json=payload)
             assert res.status_code == 200
@@ -460,7 +460,7 @@ class TestDislikedGenresFiltering:
             assert metadata_event is not None, "SSE metadata event must be present"
             remaining_ids = [c["id"] for c in metadata_event["candidates"]]
 
-            # Candidates 101 (Mecha) and 103 (Horror) MUST be excluded
+            # Candidates 101 (Mecha) and 103 (Horror) MUST be excluded (case-insensitive)
             assert 101 not in remaining_ids
             assert 103 not in remaining_ids
 
@@ -469,31 +469,8 @@ class TestDislikedGenresFiltering:
             assert 104 in remaining_ids
 
             # Active avoid_genres in metadata payload
-            assert "Mecha" in metadata_event["avoid_genres"]
+            assert "Mecha" in metadata_event["avoid_genres"] or "mecha" in metadata_event["avoid_genres"]
             assert "Horror" in metadata_event["avoid_genres"]
-
-    @pytest.mark.asyncio
-    async def test_disliked_genres_case_insensitive_matching(self, mock_pipeline_fast):
-        """Negative genre matching is strictly case-insensitive."""
-        transport = ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            payload = {
-                "query": "recommend anime",
-                "disliked_genres": ["mecha", "HORROR"],
-            }
-            res = await client.post("/chat", json=payload)
-            assert res.status_code == 200
-
-            metadata_event = None
-            for line in res.text.split("\n"):
-                if line.startswith("data: ") and '"candidates":' in line:
-                    metadata_event = json.loads(line[6:])
-                    break
-
-            assert metadata_event is not None
-            remaining_ids = [c["id"] for c in metadata_event["candidates"]]
-            assert 101 not in remaining_ids
-            assert 103 not in remaining_ids
             assert 102 in remaining_ids
 
     @pytest.mark.asyncio

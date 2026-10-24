@@ -237,7 +237,7 @@ class TestSprint1Hardening(unittest.TestCase):
     def test_seen_ids_set_subtraction_excludes_specified_anime(self):
         """
         Verifies that merge_deduplicate() filters out all IDs present in seen_ids
-        using in-memory O(1) set subtraction.
+        using in-memory O(1) set subtraction, and that list input is coerced to a set.
         """
         ranker = Ranker.__new__(Ranker)
 
@@ -260,24 +260,9 @@ class TestSprint1Hardening(unittest.TestCase):
         self.assertIn(202, returned_ids)
         self.assertEqual(len(df), 2)
 
-    def test_seen_ids_subtraction_with_list_input(self):
-        """
-        Verifies that seen_ids passed as a python list is correctly coerced to a set
-        and filters items without errors.
-        """
-        ranker = Ranker.__new__(Ranker)
-
-        retrieved_list = [
-            {"id": 1, "title_romaji": "Anime A"},
-            {"id": 2, "title_romaji": "Anime B"},
-            {"id": 3, "title_romaji": "Anime C"},
-        ]
-        all_results = [retrieved_list]
-
-        df = ranker.merge_deduplicate(all_results, seen_ids=[1, 3])
-
-        returned_ids = df["id"].tolist()
-        self.assertEqual(returned_ids, [2])
+        # seen_ids supplied as a python list is coerced to a set and filters identically
+        df_from_list = ranker.merge_deduplicate(all_results, seen_ids=[152802, 101])
+        self.assertEqual(df_from_list["id"].tolist(), [202])
 
     def test_seen_ids_subtraction_when_all_candidates_seen(self):
         """

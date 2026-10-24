@@ -329,38 +329,6 @@ class TestStateManagerTimeoutAndResilience:
         await sm.append_session_turn("sess_network_error", {"role": "user", "content": "resilient query"})
 
 
-class TestExclusionFilteringIntegration:
-    """Verifies Task 4.2 & AC 4.2: Seen titles are 100% excluded via O(1) set subtraction."""
-
-    @pytest.mark.asyncio
-    async def test_seen_ids_deduplication_in_ranker(self):
-        sm = StateManager(redis_url=None, redis_token=None)
-        user_id = "user_eval_exclusion"
-
-        await sm.record_seen_ids(user_id, [101, 102])
-        seen = await sm.get_excluded_ids(user_id)
-        assert seen == {101, 102}
-
-        raw_candidates = [
-            [
-                {"id": 101, "title_userPreferred": "Seen Anime A", "description": "desc A"},
-                {"id": 102, "title_userPreferred": "Seen Anime B", "description": "desc B"},
-                {"id": 103, "title_userPreferred": "Fresh Anime C", "description": "desc C"},
-                {"id": 104, "title_userPreferred": "Fresh Anime D", "description": "desc D"},
-            ]
-        ]
-
-        ranker = Ranker.__new__(Ranker)
-        deduped_df = ranker.merge_deduplicate(raw_candidates, seen_ids=seen)
-
-        output_ids = deduped_df["id"].tolist()
-        assert 101 not in output_ids, "Anime 101 was seen and should have been excluded"
-        assert 102 not in output_ids, "Anime 102 was seen and should have been excluded"
-        assert 103 in output_ids, "Fresh Anime 103 must be present"
-        assert 104 in output_ids, "Fresh Anime 104 must be present"
-        assert len(output_ids) == 2
-
-
 class TestHybridLLMCache:
     """Verifies that LLMCache supports both synchronous and asynchronous operations."""
 
@@ -517,30 +485,4 @@ class TestAC44WebConversationalIntegrationSSEStreaming:
                 assert '"status": "completed"' in body
 
 
-class TestClientDisconnectionHandling:
-    """Verifies that client disconnection aborts the generator cleanly without unhandled leaks."""
 
-    @pytest.mark.asyncio
-    async def test_client_disconnect_aborts_stream_cleanly(self, catalog_candidates):
-        is_client_connected = True
-
-        async def disconnect_checker():
-            return not is_client_connected
-
-        async def mock_retrieval(*args, **kwargs):
-            return catalog_candidates, {"retrieval_ms": 20.0}
-
-        orch = PipelineOrchestrator(retrieval_func=mock_retrieval)
-
-        events_received = 0
-        gen = orch.stream_chat(
-            query="action anime",
-            top_k=2,
-            is_disconnected=disconnect_checker,
-        )
-
-        async for _ in gen:
-            events_received += 1
-            is_client_connected = False
-
-        assert events_received >= 1

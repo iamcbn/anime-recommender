@@ -367,26 +367,21 @@ class TestPostRecommendValidation:
     """Smoke test for request validation rules (min_length < 2)."""
 
     @pytest.mark.asyncio
-    async def test_post_recommend_query_too_short_returns_422(self, async_client):
-        """POST /recommend with query length < 2 must trigger 422 Unprocessable Entity."""
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"query": "a", "top_k": 5},
+            {"query": "", "top_k": 5},
+            {"top_k": 5},
+        ],
+        ids=["too_short", "empty", "missing_field"],
+    )
+    async def test_post_recommend_invalid_query_returns_422(self, async_client, payload):
+        """
+        Single source of truth for POST /recommend query validation: a query that is
+        too short, empty, or missing entirely must trigger 422 Unprocessable Entity.
+        """
         headers = {"access_token": TEST_API_KEY}
-        payload = {"query": "a", "top_k": 5}
-        response = await async_client.post("/recommend", json=payload, headers=headers)
-        assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_post_recommend_empty_query_returns_422(self, async_client):
-        """POST /recommend with empty string query must trigger 422."""
-        headers = {"access_token": TEST_API_KEY}
-        payload = {"query": "", "top_k": 5}
-        response = await async_client.post("/recommend", json=payload, headers=headers)
-        assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_post_recommend_missing_query_field_returns_422(self, async_client):
-        """POST /recommend missing query field completely must trigger 422."""
-        headers = {"access_token": TEST_API_KEY}
-        payload = {"top_k": 5}
         response = await async_client.post("/recommend", json=payload, headers=headers)
         assert response.status_code == 422
 

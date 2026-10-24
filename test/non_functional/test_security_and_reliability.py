@@ -522,37 +522,6 @@ class TestInputValidationAndInjectionDefense:
         assert res_admin.status_code == 200
         assert isinstance(res_admin.json(), list)
 
-    def test_boundary_validation_empty_query(self, client: TestClient, monkeypatch):
-        """
-        Non-functional property: Input boundary validation for empty queries.
-        Verifies that empty string inputs and pure whitespace strings are rejected cleanly
-        with HTTP 422 Unprocessable Content or 400 Bad Request.
-        """
-        user_key = "ar_live_77777777_mock_user_key_for_boundary_test_07"
-        monkeypatch.setenv("MY_API_KEY", user_key)
-
-        res = client.post(
-            "/recommend",
-            json={"query": ""},
-            headers={"Authorization": f"Bearer {user_key}"}
-        )
-        assert res.status_code in (400, 422)
-
-    def test_boundary_validation_under_minimum_length(self, client: TestClient, monkeypatch):
-        """
-        Non-functional property: Input boundary validation for sub-minimal length strings.
-        Verifies that queries below the declared minimum length of 2 characters are rejected with 422.
-        """
-        user_key = "ar_live_88888888_mock_user_key_for_min_length_08"
-        monkeypatch.setenv("MY_API_KEY", user_key)
-
-        res = client.post(
-            "/recommend",
-            json={"query": "a"},
-            headers={"Authorization": f"Bearer {user_key}"}
-        )
-        assert res.status_code == 422
-
     def test_boundary_validation_exceeding_maximum_length(self, client: TestClient):
         """
         Non-functional property: Input boundary validation for excessively long queries.

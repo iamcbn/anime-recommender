@@ -9,7 +9,7 @@ def generate_report(history_path=None, output_md=None):
         history_path = data_dir_history if data_dir_history.exists() else root_history
 
     if output_md is None:
-        output_md = Path(__file__).resolve().parent.parent / "data" / "evaluation_report_v2.md"
+        output_md = Path(__file__).resolve().parent.parent / "data" / "evaluation_report.md"
 
     if not Path(history_path).exists():
         print(f"Error: {history_path} not found. Run evaluate_first_stage.py first.")

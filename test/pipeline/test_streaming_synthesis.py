@@ -162,61 +162,41 @@ class TestCircuitBreakerAndFallbacks:
         ]
 
     # =========================================================================
-    # AC 3.3: OPENAI HTTP 500 CIRCUIT BREAKER FALLBACK
+    # AC 3.3: OPENAI CIRCUIT BREAKER FALLBACK (500 & TIMEOUT)
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_ac3_3_openai_500_circuit_breaker_fallback(self, sample_candidates):
+    @pytest.mark.parametrize(
+        "error_factory",
+        [
+            lambda req: InternalServerError("Internal Server Error from OpenAI", response=httpx.Response(500, request=req), body=None),
+            lambda req: APITimeoutError(request=req),
+        ],
+        ids=["500_server_error", "timeout_error"],
+    )
+    async def test_ac3_3_openai_circuit_breaker_fallback(self, sample_candidates, error_factory):
         """
-        AC 3.3: Verifies that when OpenAI returns an HTTP 500 error,
+        AC 3.3: Verifies that when OpenAI returns an HTTP 500 error or times out,
         the synthesizer catches it and yields a deterministic fallback pitch
         referencing the retrieved candidate cards without crashing.
         """
         mock_request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-        mock_response = httpx.Response(500, request=mock_request)
-        server_error = InternalServerError("Internal Server Error from OpenAI", response=mock_response, body=None)
+        error_to_raise = error_factory(mock_request)
 
         mock_async_client = MagicMock()
-        mock_async_client.chat.completions.create = AsyncMock(side_effect=server_error)
+        mock_async_client.chat.completions.create = AsyncMock(side_effect=error_to_raise)
 
         synthesizer = RecommendationSynthesizer(async_client=mock_async_client)
         chunks = []
 
-        # Must not raise InternalServerError
         async for chunk in synthesizer.stream_pitch("time travel anime", sample_candidates):
             chunks.append(chunk)
 
         full_fallback = "".join(chunks)
-        assert len(chunks) > 0, "Synthesizer failed to yield fallback tokens on OpenAI 500"
+        assert len(chunks) > 0, "Synthesizer failed to yield fallback tokens on OpenAI outage"
         assert "Steins;Gate" in full_fallback, "Fallback pitch must include candidate titles"
         assert "Monster" in full_fallback
         assert "Here are the top-rated anime recommendations" in full_fallback
-
-    # =========================================================================
-    # AC 3.3: OPENAI TIMEOUT CIRCUIT BREAKER FALLBACK
-    # =========================================================================
-
-    @pytest.mark.asyncio
-    async def test_ac3_3_openai_timeout_circuit_breaker_fallback(self, sample_candidates):
-        """
-        AC 3.3: Verifies that when OpenAI API times out, the circuit breaker
-        smoothly yields the deterministic fallback pitch.
-        """
-        mock_request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-        timeout_error = APITimeoutError(request=mock_request)
-
-        mock_async_client = MagicMock()
-        mock_async_client.chat.completions.create = AsyncMock(side_effect=timeout_error)
-
-        synthesizer = RecommendationSynthesizer(async_client=mock_async_client)
-        chunks = []
-
-        async for chunk in synthesizer.stream_pitch("psychological anime", sample_candidates):
-            chunks.append(chunk)
-
-        full_fallback = "".join(chunks)
-        assert "Here are the top-rated anime recommendations" in full_fallback
-        assert "Steins;Gate" in full_fallback
 
     @pytest.mark.asyncio
     async def test_unconfigured_api_key_falls_back_gracefully(self, sample_candidates):

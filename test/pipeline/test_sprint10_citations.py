@@ -181,30 +181,15 @@ class TestStreamingCitationBuffer:
         full_result = "".join(emitted)
         assert full_result == "Watch [[anime:19]] now!"
 
-    def test_split_at_bracket_boundary(self):
-        buffer = StreamingCitationBuffer(valid_candidate_ids={42})
-        out1 = buffer.feed("Check out [[anime:42]")
-        out2 = buffer.feed("] is great")
-        out3 = buffer.flush()
-
-        assert out1 == "Check out "
-        assert out2 == "[[anime:42]] is great"
-        assert out3 == ""
-        assert (out1 + out2 + out3) == "Check out [[anime:42]] is great"
-
     def test_normal_text_with_brackets_no_hanging_or_leak(self):
         buffer = StreamingCitationBuffer(valid_candidate_ids={42})
         out1 = buffer.feed("Score: [")
-        out2 = buffer.feed("9.5/10] is great")
-        out3 = buffer.flush()
+        out2 = buffer.feed("9.5/10] is great. ")
+        out3 = buffer.feed("1. [ID: 19] Title: Monster. ")
+        out4 = buffer.feed("Check out [[character:Guts]]")
+        out5 = buffer.flush()
 
-        assert (out1 + out2 + out3) == "Score: [9.5/10] is great"
-
-    def test_metadata_brackets_no_hanging(self):
-        buffer = StreamingCitationBuffer(valid_candidate_ids={19})
-        out1 = buffer.feed("1. [ID: 19] Title: Monster")
-        out2 = buffer.flush()
-        assert (out1 + out2) == "1. [ID: 19] Title: Monster"
+        assert (out1 + out2 + out3 + out4 + out5) == "Score: [9.5/10] is great. 1. [ID: 19] Title: Monster. Check out [[character:Guts]]"
 
     def test_unclosed_trailing_bracket_flushes_at_end(self):
         buffer = StreamingCitationBuffer(valid_candidate_ids={19})
@@ -213,12 +198,6 @@ class TestStreamingCitationBuffer:
         assert out1 == "Draft note "
         assert out2 == "["
         assert (out1 + out2) == "Draft note ["
-
-    def test_non_anime_double_brackets(self):
-        buffer = StreamingCitationBuffer(valid_candidate_ids={19})
-        out1 = buffer.feed("Check out [[character:Guts]]")
-        out2 = buffer.flush()
-        assert (out1 + out2) == "Check out [[character:Guts]]"
 
     def test_alias_equivalence(self):
         assert StreamingCitationFilter is StreamingCitationBuffer

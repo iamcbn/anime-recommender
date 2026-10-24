@@ -78,3 +78,20 @@ This document records the architectural decisions, classifications (keep, merge,
   - Flow 1: Conversational discovery flow (`/chat`) validating query input, candidate card rendering, and concierge pitch streaming.
   - Flow 2: Developer portal self-service flow (`/developers`) validating quota banner and key management table.
   - Flow 3: API reference and interactive code sample exploration (`/docs`) validating language tab switching (cURL, Python, Node.js).
+
+### Sprint 6: Regression Tests
+- Mined git history and issue references for past bug fixes to establish permanent regression guards in `test/regression/test_past_regressions.py` (12 tests):
+  - `test_regression_commit_0809e9d_budget_guard_sync_check`: ensures synchronous budget guard checking does not fail on mock types or raise coroutine errors.
+  - `test_regression_commit_b542622_modal_local_models_dir_ignored`: verifies AST definitions in `modal_deploy.py` ignore local `models/` directory during `add_local_dir` to prevent volume mount collisions.
+  - `test_regression_commit_02d740d_modal_volume_hydration`: verifies Modal 1.x compatibility using `modal.Volume.from_name(...).hydrate()`.
+  - `test_regression_commit_efd54d1_modal_secrets_gateway_isolation`: verifies Modal gateway secrets injection in both shared and three-tier isolated modes.
+  - `test_regression_commit_ff7f4af_dynamic_db_port_parsing`: verifies `config.py` converts `DB_PORT` strings to native integers with port 5432 and 6543 fallbacks.
+  - `test_regression_commit_488e3ec_pipeline_state_manager_resets`: verifies `StateManager` uninitialised session handling, 5-turn history evictions, and cache wipes.
+  - `test_regression_commit_1572b7a_sql_retrieval_query_escaping`: verifies parameterized queries in `DatabaseManager.bm25_search` protect against prompt quotation crashes and SQL injection.
+  - `test_regression_commit_d491610_env_security_boundary`: verifies `FORBIDDEN_SECRET_KEYS` prevents `VITE_`-prefixed backend secrets in frontend configuration.
+  - `test_regression_bug_001_windows_event_loop_concurrency_jitter`: documents and protects BUG-001 under Windows process scheduling jitter via `xfail(strict=False)`.
+- Added high-speed critical path smoke set:
+  - `test_regression_smoke_recommend_flow_fast`: sub-second validation of `POST /recommend`.
+  - `test_regression_smoke_chat_streaming_handshake`: validation of `POST /chat` immediate `metadata` event stream.
+  - `test_regression_smoke_unauthenticated_rejection_fast`: instant sub-100ms 401 rejection for unauthenticated calls.
+- Registered `@pytest.mark.smoke` in `pytest.ini`.

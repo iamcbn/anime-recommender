@@ -95,3 +95,16 @@ This document records the architectural decisions, classifications (keep, merge,
   - `test_regression_smoke_chat_streaming_handshake`: validation of `POST /chat` immediate `metadata` event stream.
   - `test_regression_smoke_unauthenticated_rejection_fast`: instant sub-100ms 401 rejection for unauthenticated calls.
 - Registered `@pytest.mark.smoke` in `pytest.ini`.
+
+### Sprint 7: Performance Tests
+- Implemented environment-driven performance configuration loader `test/performance/__init__.py` reading thresholds with local fallbacks (`PERF_RECOMMEND_P95_MS`, `PERF_CHAT_TTFT_MS`, `PERF_LOAD_CONCURRENCY`, `PERF_DEV_KEYS_P95_MS`, `PERF_FRONTEND_NAV_MS`, `PERF_FRONTEND_BUNDLE_KB`).
+- Implemented backend benchmark suite `test/performance/test_performance_benchmarks.py` (6 tests):
+  - Benchmark 1: `POST /recommend` P95 latency baseline (asserts P95 <= `PERF_RECOMMEND_P95_MS`, recorded 3.52ms).
+  - Benchmark 2: `POST /chat` Time-to-First-Token streaming baseline (asserts P95 TTFT <= `PERF_CHAT_TTFT_MS`, recorded 3.48ms).
+  - Benchmark 3: Modest concurrent load profile (10 concurrent requests to `/recommend` via `asyncio.gather`, 100% success rate without socket drops).
+  - Benchmark 4: Developer key authentication overhead (JWT verification and in-memory key listing <= `PERF_DEV_KEYS_P95_MS`, recorded 1.51ms).
+  - Benchmark 5: HMAC-SHA256 hashing and positive cache lookup microbenchmark (recorded 0.0039ms).
+  - Benchmark 6: Frontend production bundle budget validation (vendor chunk: 164.93 kB, index chunk: 144.14 kB, supabase chunk: 223.77 kB against `PERF_FRONTEND_BUNDLE_KB` ceiling of 650.0 kB).
+- Implemented frontend Navigation Timing suite `frontend/e2e/performance.spec.ts` (3 tests):
+  - Measured W3C Navigation Timing API duration across `/chat` (1173.70ms), `/developers` (589.00ms), and `/docs` (895.70ms) against the `PERF_FRONTEND_NAV_MS` threshold (3000ms).
+  - Added repository-level `playwright.config.js` to enable running Playwright directly from the repository root.

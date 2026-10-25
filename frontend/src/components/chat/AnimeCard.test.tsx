@@ -304,11 +304,11 @@ describe('AnimeCard component', () => {
       averageScore: 86.4,
     };
     render(<AnimeCard anime={anime} onMoreLikeThis={mockOnMoreLikeThis} />);
-    const badgeText = screen.getByText('★ 86%');
+    const badgeText = screen.getByText('★ 8.6');
     expect(badgeText).toBeInTheDocument();
 
     const badgeContainer = badgeText.closest('div[title]');
-    expect(badgeContainer).toHaveAttribute('title', 'AniList Community Rating: 86%');
+    expect(badgeContainer).toHaveAttribute('title', 'AniList Community Rating: 8.6 / 10');
   });
 
   it('toggles curator note panel and displays custom note or fallback with exclusion badge', async () => {

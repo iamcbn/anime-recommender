@@ -193,6 +193,25 @@ describe('ConciergePitch component', () => {
     expect(screen.queryByText('Taste Concierge Pitch')).not.toBeInTheDocument();
   });
 
+  it('renders resolved anime title rather than raw tag for citations in single card candidate lists', () => {
+    /**
+     * Verifies that [[anime:<id>]] tags in single-candidate contexts resolve to the anime title
+     * without displaying raw [[anime:id]] tags.
+     */
+    const pitchText = '[[anime:16035]] is a perfect match for psychological suspense.';
+    const candidates: AnimeCandidate[] = [
+      {
+        id: 16035,
+        title_userPreferred: 'AMNESIA',
+      },
+    ];
+
+    render(<ConciergePitch plain text={pitchText} candidates={candidates} />);
+
+    expect(screen.getByRole('button', { name: /amnesia/i })).toBeInTheDocument();
+    expect(screen.queryByText(/\[\[anime:16035\]\]/)).not.toBeInTheDocument();
+  });
+
   it('renders bullet lists using unicode bullets and numbered prefixes', () => {
     /**
      * Verifies that unicode bullets (•) and numbered items (1., 2.) are recognised as lists.

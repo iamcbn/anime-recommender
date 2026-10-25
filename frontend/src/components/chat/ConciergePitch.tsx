@@ -36,16 +36,17 @@ export interface ConciergePitchProps {
  * Helper to resolve anime title from candidate metadata.
  */
 function getCandidateTitle(candidate?: AnimeCandidate, animeId?: number): string {
-  if (!candidate) return `Anime #${animeId}`;
-  return (
-    candidate.title_userPreferred ||
-    candidate.title?.userPreferred ||
-    candidate.title_english ||
-    candidate.title?.english ||
-    candidate.title_romaji ||
-    candidate.title?.romaji ||
-    `Anime #${animeId}`
-  );
+  if (candidate) {
+    const candidateTitle =
+      candidate.title_userPreferred ||
+      candidate.title?.userPreferred ||
+      candidate.title_english ||
+      candidate.title?.english ||
+      candidate.title_romaji ||
+      candidate.title?.romaji;
+    if (candidateTitle) return candidateTitle;
+  }
+  return animeId ? `Anime #${animeId}` : 'Anime';
 }
 
 /**
@@ -142,7 +143,10 @@ export function renderFormattedInlineText(
     const citationMatch = part.match(/^\[{1,2}:?anime:\s*(\d+)\s*#?\]{1,2}$/i);
     if (citationMatch) {
       const animeId = parseInt(citationMatch[1], 10);
-      const candidate = candidates?.find((c) => c.id === animeId);
+      const candidate =
+        candidates?.find((c) => String(c.id) === String(animeId)) ||
+        (candidates?.length === 1 ? candidates[0] : undefined);
+
       return (
         <CitationChip
           key={key}

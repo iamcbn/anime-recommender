@@ -76,7 +76,7 @@ SPOILER_PATTERNS = re.compile(
 )
 
 # Structured anime citation regex pattern [[anime:<id>]]
-ANIME_CITATION_PATTERN = re.compile(r"\[\[anime:(\d+)\]\]")
+ANIME_CITATION_PATTERN = re.compile(r"\[{1,2}:?anime:\s*(\d+)\s*#?\]{1,2}", re.IGNORECASE)
 
 # Matches any suffix that could be an incomplete [[anime:<id>]] tag at stream chunk boundaries
 PARTIAL_TAG_PATTERN = re.compile(
@@ -95,10 +95,12 @@ def _safe_token_count(val: Any, default: int = 0) -> int:
 def validate_and_sanitize_citations(
     text: str,
     valid_candidate_ids: Optional[Union[Set[Any], List[Any], Dict[Any, Any]]] = None,
+    replacement_title: Optional[str] = None,
 ) -> str:
     """
     Validates and sanitizes structured anime citation tags [[anime:<id>]].
     Preserves valid candidate tags; strips hallucinated or unverified tags.
+    If replacement_title is provided, replaces valid tags directly with the clean title.
     """
     if not text:
         return ""
@@ -118,10 +120,12 @@ def validate_and_sanitize_citations(
         try:
             tag_id = int(tag_id_str)
             if tag_id in valid_int_ids:
+                if replacement_title:
+                    return replacement_title
                 return match.group(0)
-            return ""
+            return replacement_title or ""
         except ValueError:
-            return ""
+            return replacement_title or ""
 
     return ANIME_CITATION_PATTERN.sub(_replace_tag, text)
 
@@ -140,9 +144,11 @@ class StreamingCitationBuffer:
         self,
         valid_candidate_ids: Optional[Union[Set[Any], List[Any], Dict[Any, Any]]] = None,
         max_buffer_len: int = 64,
+        replacement_title: Optional[str] = None,
     ):
         self.valid_candidate_ids = valid_candidate_ids or set()
         self.max_buffer_len = max_buffer_len
+        self.replacement_title = replacement_title
         self._buffer: str = ""
 
     def feed(self, chunk: Optional[str]) -> str:
@@ -167,7 +173,11 @@ class StreamingCitationBuffer:
                 safe = self._buffer
                 self._buffer = ""
 
-        return validate_and_sanitize_citations(safe, self.valid_candidate_ids)
+        return validate_and_sanitize_citations(
+            safe,
+            self.valid_candidate_ids,
+            replacement_title=self.replacement_title,
+        )
 
     process_chunk = feed
 
@@ -177,7 +187,11 @@ class StreamingCitationBuffer:
         """
         remaining = self._buffer
         self._buffer = ""
-        return validate_and_sanitize_citations(remaining, self.valid_candidate_ids)
+        return validate_and_sanitize_citations(
+            remaining,
+            self.valid_candidate_ids,
+            replacement_title=self.replacement_title,
+        )
 
     finalize = flush
 
@@ -423,8 +437,6 @@ class RecommendationSynthesizer:
         if not candidate:
             return "Recommended title based on catalog relevance."
         title = self._extract_title(candidate)
-        cid = candidate.get("id")
-        tag_str = f"[[anime:{cid}]] " if cid is not None else ""
         score = candidate.get("averageScore")
         score_str = f"with a {score}% score" if score is not None else ""
         genres = candidate.get("genres")
@@ -438,8 +450,8 @@ class RecommendationSynthesizer:
         meta_parts = [p for p in [score_str, genres_str] if p]
         meta_summary = f" ({', '.join(meta_parts)})" if meta_parts else ""
         if snippet:
-            return f"{tag_str}**{title}**{meta_summary} matches your preference: {snippet}"
-        return f"{tag_str}**{title}**{meta_summary} is recommended for your request."
+            return f"**{title}**{meta_summary} matches your preference: {snippet}"
+        return f"**{title}**{meta_summary} is recommended for your request."
 
     async def synthesize_single_pitch(
         self,
@@ -448,7 +460,7 @@ class RecommendationSynthesizer:
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> str:
-        """Generates a targeted, concise single-title micro-pitch (<80 completion tokens)."""
+        """Generates a targeted, concise single-title micro-pitch (<100 completion tokens)."""
         if not candidate:
             return "No anime candidate was provided to generate a rationale."
         if await budget_guard.is_budget_exceeded("presentation") or self.async_client is None:
@@ -472,8 +484,9 @@ class RecommendationSynthesizer:
             "1. Rely SOLELY on the provided anime metadata (title, synopsis, genres, studios, average score).\n"
             "2. Do NOT invent plot points, characters, or lore not present in the synopsis.\n"
             "3. NEVER reveal major spoilers, endings, or character deaths.\n"
-            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<80 tokens).\n"
-            "5. Cite the title as [[anime:<id>]] tag."
+            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<100 tokens).\n"
+            f"5. Refer to the anime by its title naturally in the pitch (e.g. **{title}** or {title}). "
+            "Do NOT use raw [[anime:<id>]] citation tags."
         )
         user_content = (
             f"User Query: \"{query}\"\n"
@@ -491,15 +504,24 @@ class RecommendationSynthesizer:
         ]
         t0 = time.perf_counter()
         try:
-            response = await asyncio.wait_for(
-                self.async_client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=80,
-                ),
-                timeout=self.timeout,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_completion_tokens": 100,
+            }
+            try:
+                response = await asyncio.wait_for(
+                    self.async_client.chat.completions.create(**create_kwargs),
+                    timeout=self.timeout,
+                )
+            except (TypeError, APIStatusError):
+                create_kwargs.pop("max_completion_tokens", None)
+                create_kwargs["max_tokens"] = 100
+                response = await asyncio.wait_for(
+                    self.async_client.chat.completions.create(**create_kwargs),
+                    timeout=self.timeout,
+                )
             pitch_text = response.choices[0].message.content.strip() if response.choices and response.choices[0].message.content else ""
             usage_obj = getattr(response, "usage", None)
             prompt_tokens = _safe_token_count(getattr(usage_obj, "prompt_tokens", 0) or 0)
@@ -529,7 +551,7 @@ class RecommendationSynthesizer:
                 return self.generate_single_fallback_pitch(query, candidate)
             scrubbed = self.scrub_spoilers(pitch_text)
             valid_ids = {cid} if cid is not None else set()
-            sanitised = validate_and_sanitize_citations(scrubbed, valid_ids)
+            sanitised = validate_and_sanitize_citations(scrubbed, valid_ids, replacement_title=title)
             return sanitised or scrubbed
         except Exception as exc:
             logger.warning(f"[RecommendationSynthesizer] Single pitch failed: {exc}. Serving fallback.")
@@ -575,8 +597,9 @@ class RecommendationSynthesizer:
             "1. Rely SOLELY on the provided anime metadata (title, synopsis, genres, studios, average score).\n"
             "2. Do NOT invent plot points, characters, or lore not present in the synopsis.\n"
             "3. NEVER reveal major spoilers, endings, or character deaths.\n"
-            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<80 tokens).\n"
-            "5. Cite the title as [[anime:<id>]] tag."
+            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<100 tokens).\n"
+            f"5. Refer to the anime by its title naturally in the pitch (e.g. **{title}** or {title}). "
+            "Do NOT use raw [[anime:<id>]] citation tags."
         )
         user_content = (
             f"User Query: \"{query}\"\n"
@@ -594,25 +617,44 @@ class RecommendationSynthesizer:
         ]
         t0 = time.perf_counter()
         accumulated_tokens = []
+        citation_buffer = StreamingCitationBuffer(
+            valid_candidate_ids={cid} if cid is not None else set(),
+            replacement_title=title,
+        )
         try:
-            stream_resp = await asyncio.wait_for(
-                self.async_client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=80,
-                    stream=True,
-                ),
-                timeout=self.timeout,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_completion_tokens": 100,
+                "stream": True,
+            }
+            try:
+                stream_resp = await asyncio.wait_for(
+                    self.async_client.chat.completions.create(**create_kwargs),
+                    timeout=self.timeout,
+                )
+            except (TypeError, APIStatusError):
+                create_kwargs.pop("max_completion_tokens", None)
+                create_kwargs["max_tokens"] = 100
+                stream_resp = await asyncio.wait_for(
+                    self.async_client.chat.completions.create(**create_kwargs),
+                    timeout=self.timeout,
+                )
             async for chunk in stream_resp:
                 if is_disconnected and await is_disconnected():
                     return
                 if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                     tok = chunk.choices[0].delta.content
                     scrubbed = self.scrub_spoilers(tok)
-                    accumulated_tokens.append(scrubbed)
-                    yield scrubbed
+                    clean_chunk = citation_buffer.feed(scrubbed)
+                    if clean_chunk:
+                        accumulated_tokens.append(clean_chunk)
+                        yield clean_chunk
+            remaining = citation_buffer.flush()
+            if remaining:
+                accumulated_tokens.append(remaining)
+                yield remaining
             total_tokens = len("".join(accumulated_tokens).split()) * 2
             try:
                 log_llm_usage_event(

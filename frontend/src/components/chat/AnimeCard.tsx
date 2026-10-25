@@ -221,9 +221,9 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
 
               {/* Score Badge */}
               {score !== null && score !== undefined && (
-                <div className="shrink-0" title={`AniList Community Rating: ${Math.round(Number(score))}%`}>
+                <div className="shrink-0" title={`AniList Community Rating: ${(Number(score) / 10).toFixed(1)} / 10`}>
                   <Badge variant={getScoreVariant(Number(score))} size="sm">
-                    ★ {Math.round(Number(score))}%
+                    ★ {(Number(score) / 10).toFixed(1)}
                   </Badge>
                 </div>
               )}

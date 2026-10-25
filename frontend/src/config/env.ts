@@ -35,6 +35,8 @@ export interface AppEnv {
   SUPABASE_ANON_KEY: string;
   API_BASE_URL: string;
   API_KEY?: string;
+  POSTHOG_KEY?: string;
+  POSTHOG_HOST?: string;
 }
 
 export const env: AppEnv = {
@@ -42,4 +44,6 @@ export const env: AppEnv = {
   SUPABASE_ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder-anon-key',
   API_BASE_URL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001').replace(/\/+$/, ''),
   API_KEY: import.meta.env.VITE_API_KEY as string | undefined,
+  POSTHOG_KEY: import.meta.env.VITE_POSTHOG_KEY as string | undefined,
+  POSTHOG_HOST: (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://eu.i.posthog.com',
 };

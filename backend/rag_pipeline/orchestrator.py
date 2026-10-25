@@ -23,6 +23,7 @@ import json
 import time
 import uuid
 import asyncio
+import hashlib
 import logging
 from typing import Optional, List, Dict, Any, Set, Tuple, AsyncGenerator, Callable, Awaitable
 from dataclasses import dataclass
@@ -51,6 +52,31 @@ def format_sse(event: str, data: Any) -> str:
     """Formats an event name and JSON-serializable data dictionary into standard SSE payload."""
     payload = json.dumps(sanitize_for_json(data), ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+# ----------------------
+# EXACT NORMALIZED QUERY HASH CACHE HELPER (TTL = 24H)
+# ----------------------
+
+def compute_query_hash(
+    query: str,
+    top_k: int = 5,
+    allow_adult: bool = False,
+    avoid_genres: Optional[List[str]] = None,
+) -> str:
+    """
+    Computes deterministic SHA-256 hash key for exact query caching:
+    1. Normalises query via lowercasing and whitespace collapsing.
+    2. Sorts auxiliary parameters (allow_adult, avoid_genres, top_k).
+    3. Produces canonical key string: adult={bool}&genres={sorted_csv}&k={top_k}&q={query}.
+    4. Computes SHA-256 hash with 'cache:query:' prefix.
+    """
+    clean_query = re.sub(r"\s+", " ", (query or "").strip().lower())
+    clean_genres = sorted({str(g).strip().lower() for g in (avoid_genres or []) if g and str(g).strip()})
+    genres_str = ",".join(clean_genres)
+    canonical = f"adult={bool(allow_adult)}&genres={genres_str}&k={int(top_k)}&q={clean_query}"
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"cache:query:{digest}"
 
 
 # ----------------------
@@ -203,6 +229,34 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.debug(f"[PipelineOrchestrator] Candidate lookup error for ID {anime_id}: {exc}")
         return None
+
+    async def get_cached_payload(
+        self,
+        query: str,
+        top_k: int = 5,
+        allow_adult: bool = False,
+        avoid_genres: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Direct lookup helper for exact query hash cache in Upstash Redis."""
+        if not self.state_manager:
+            return None
+        cache_key = compute_query_hash(query, top_k, allow_adult, avoid_genres)
+        return await self.state_manager.get_query_cache(cache_key)
+
+    async def set_cached_payload(
+        self,
+        query: str,
+        payload: Dict[str, Any],
+        top_k: int = 5,
+        allow_adult: bool = False,
+        avoid_genres: Optional[List[str]] = None,
+        ttl: int = 86400,
+    ) -> None:
+        """Direct population helper for exact query hash cache in Upstash Redis (24h TTL)."""
+        if not self.state_manager:
+            return
+        cache_key = compute_query_hash(query, top_k, allow_adult, avoid_genres)
+        await self.state_manager.set_query_cache(cache_key, payload, ttl=ttl)
 
     async def get_single_title_pitch(
         self,
@@ -407,6 +461,90 @@ class PipelineOrchestrator:
             pipeline_timings["state_lookup_ms"] = state_lookup_ms
 
             # ---------------------------------------------------------
+            # STEP 2.1: EXACT NORMALIZED QUERY HASH CACHE CHECK (TTL = 24H)
+            # ---------------------------------------------------------
+            cache_key = compute_query_hash(
+                query=query,
+                top_k=top_k,
+                allow_adult=allow_adult,
+                avoid_genres=avoid_genres,
+            )
+            cached_payload: Optional[Dict[str, Any]] = None
+            if self.state_manager is not None and not active_history and offset == 0:
+                try:
+                    cached_payload = await self.state_manager.get_query_cache(cache_key)
+                except Exception as c_exc:
+                    logger.debug(f"[PipelineOrchestrator] Query cache lookup failed: {c_exc}")
+
+            if cached_payload:
+                cached_candidates = cached_payload.get("candidates", [])
+                cached_avoid_genres = cached_payload.get("avoid_genres", [])
+                cached_avoid_tropes = cached_payload.get("avoid_tropes", [])
+
+                cache_ttft_ms = round((time.perf_counter() - stream_start) * 1000, 2)
+                pipeline_timings["cache_hit"] = True
+                pipeline_timings["ttft_metadata_ms"] = cache_ttft_ms
+                pipeline_timings["total_duration_ms"] = cache_ttft_ms
+                logger.info(f"[PipelineOrchestrator] Exact query cache hit in {cache_ttft_ms}ms ($0 spent, 0 GPU)")
+
+                cached_ids = [c["id"] for c in cached_candidates if isinstance(c, dict) and "id" in c]
+                if cached_ids and self.state_manager is not None:
+                    try:
+                        await self.state_manager.record_seen_ids(active_user_id, cached_ids)
+                    except Exception:
+                        pass
+
+                yield format_sse("metadata", {
+                    "recommendation_id": active_request_id,
+                    "request_id": active_request_id,
+                    "query": query,
+                    "effective_query": query,
+                    "session_id": active_session_id,
+                    "user_id": active_user_id,
+                    "count": len(cached_candidates),
+                    "candidates": cached_candidates,
+                    "avoid_genres": cached_avoid_genres,
+                    "avoid_tropes": cached_avoid_tropes,
+                    "timings": pipeline_timings,
+                })
+
+                yield format_sse("done", {
+                    "status": "completed",
+                    "cached": True,
+                    "session_id": active_session_id,
+                    "user_id": active_user_id,
+                    "count": len(cached_candidates),
+                    "timings": pipeline_timings,
+                })
+
+                try:
+                    await asyncio.to_thread(
+                        telemetry_logger.log_recommendation_event,
+                        request_id=active_request_id,
+                        endpoint="chat",
+                        source="user",
+                        api_key_id=api_key_id,
+                        query=query,
+                        top_k=top_k,
+                        allow_adult=allow_adult,
+                        results=cached_candidates,
+                        results_count=len(cached_candidates),
+                        status="ok",
+                        status_code=200,
+                        error=None,
+                        total_ms=cache_ttft_ms,
+                        timings=pipeline_timings,
+                        client_ip=client_ip,
+                        user_agent=user_agent,
+                        session_id=active_session_id,
+                        user_id=active_user_id,
+                        client_metadata=client_metadata,
+                    )
+                except Exception:
+                    pass
+                return
+
+            # ---------------------------------------------------------
             # STEP 2.5: NLI QUERY UNDERSTANDING (Sprint 8 & Sprint 11)
             # ---------------------------------------------------------
             effective_query = query
@@ -570,6 +708,8 @@ class PipelineOrchestrator:
 
             public_candidates = strip_scores(paged_candidates)
             yield format_sse("metadata", {
+                "recommendation_id": active_request_id,
+                "request_id": active_request_id,
                 "query": query,
                 "effective_query": effective_query,
                 "session_id": active_session_id,
@@ -580,6 +720,19 @@ class PipelineOrchestrator:
                 "avoid_tropes": avoid_tropes,
                 "timings": pipeline_timings,
             })
+
+            # Populate exact query hash cache for turn-1 queries (24h TTL)
+            if self.state_manager is not None and not active_history and offset == 0 and public_candidates:
+                try:
+                    cache_entry = {
+                        "query": query,
+                        "candidates": public_candidates,
+                        "avoid_genres": combined_avoid_genres,
+                        "avoid_tropes": avoid_tropes,
+                    }
+                    await self.state_manager.set_query_cache(cache_key, cache_entry, ttl=86400)
+                except Exception as c_err:
+                    logger.debug(f"[PipelineOrchestrator] Failed to populate query cache: {c_err}")
 
             # ---------------------------------------------------------
             # STEP 7: STREAMING TASTE CONCIERGE SYNTHESIS (AC 3.3)

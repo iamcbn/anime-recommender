@@ -76,6 +76,10 @@ def setup_test_environment(monkeypatch):
     test_dev_key = "test-secret-sprint9-devkey"
     monkeypatch.setenv("MY_API_KEY", test_dev_key)
     monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1,::1")
+    monkeypatch.setenv("RATE_LIMIT_ANON", "5")
+    monkeypatch.setenv("RATE_LIMIT_ANON_WINDOW", "900")
+    monkeypatch.setenv("RATE_LIMIT_AUTH", "20")
+    monkeypatch.setenv("RATE_LIMIT_AUTH_WINDOW", "3600")
 
     # Enforce in-memory mode for fast, deterministic sliding window testing
     rate_limiter.redis = None

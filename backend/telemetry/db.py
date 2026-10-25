@@ -1,6 +1,6 @@
 # backend/telemetry/db.py
 """
-Isolated PostgreSQL connection pool for Sprint 3 background telemetry logging.
+Isolated PostgreSQL connection pool for telemetry and first-party feedback logging.
 
 Design decisions (telemetry_and_archival_implementation_plan.md Section 2):
 - Uses a dedicated small psycopg2.pool.ThreadedConnectionPool (min=1, max=3).
@@ -11,13 +11,16 @@ Design decisions (telemetry_and_archival_implementation_plan.md Section 2):
 """
 
 import os
+import uuid
+import hashlib
+import asyncio
 import logging
 import threading
 from contextlib import contextmanager
-from typing import Optional, Generator
+from typing import Optional, Dict, Any, Generator
 
 import psycopg2
-from psycopg2 import pool, extensions
+from psycopg2 import pool, extensions, extras
 
 logger = logging.getLogger("anime_recommender.telemetry.db")
 
@@ -32,7 +35,7 @@ def _get_base_db_config() -> dict:
 
 def get_telemetry_db_pool() -> pool.ThreadedConnectionPool:
     """
-    Thread-safely initializes and returns the isolated ThreadedConnectionPool
+    Thread-safely initialises and returns the isolated ThreadedConnectionPool
     for telemetry writes (min=1, max=3, connect_timeout=3, statement_timeout=3000ms).
     """
     global _TELEMETRY_DB_POOL
@@ -56,7 +59,7 @@ def get_telemetry_db_pool() -> pool.ThreadedConnectionPool:
                     **pool_kwargs,
                 )
                 logger.info(
-                    f"[TelemetryDBPool] Initialized telemetry connection pool (min={minconn}, max={maxconn})."
+                    f"[TelemetryDBPool] Initialised telemetry connection pool (min={minconn}, max={maxconn})."
                 )
     return _TELEMETRY_DB_POOL
 
@@ -103,3 +106,91 @@ def close_telemetry_db_pool() -> None:
         if _TELEMETRY_DB_POOL is not None and not _TELEMETRY_DB_POOL.closed:
             _TELEMETRY_DB_POOL.closeall()
         _TELEMETRY_DB_POOL = None
+
+
+def insert_feedback_event(
+    recommendation_id: str,
+    event_type: str,
+    anime_id: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
+) -> bool:
+    """
+    Inserts a user feedback event into telemetry.feedback_events.
+    Validates event_type against allowed literals:
+    ('thumbs_up', 'thumbs_down', 'more_like_this', 'watchlist_add').
+    Hashes client IP to ensure zero raw IP storage.
+    """
+    valid_events = {"thumbs_up", "thumbs_down", "more_like_this", "watchlist_add"}
+    if event_type not in valid_events:
+        logger.warning(f"[TelemetryDB] Invalid feedback event_type '{event_type}' rejected.")
+        return False
+
+    try:
+        uuid.UUID(str(recommendation_id))
+    except (ValueError, AttributeError):
+        logger.warning(f"[TelemetryDB] Invalid recommendation_id UUID '{recommendation_id}' rejected.")
+        return False
+
+    # Privacy preservation: hash IP if provided
+    hashed_ip: Optional[str] = None
+    if client_ip:
+        hashed_ip = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:32]
+
+    serialized_meta = psycopg2.extras.Json(metadata) if metadata is not None else None
+
+    stmt = """
+    INSERT INTO telemetry.feedback_events (
+        recommendation_id,
+        event_type,
+        anime_id,
+        metadata,
+        user_id,
+        client_ip
+    ) VALUES (%s, %s, %s, %s, %s, %s);
+    """
+
+    try:
+        with get_telemetry_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    stmt,
+                    (
+                        str(recommendation_id),
+                        event_type,
+                        anime_id,
+                        serialized_meta,
+                        user_id,
+                        hashed_ip,
+                    )
+                )
+            conn.commit()
+        return True
+    except psycopg2.IntegrityError as ie:
+        # FK or check constraint violation
+        logger.warning(f"[TelemetryDB] Integrity constraint on feedback event: {ie}")
+        return False
+    except Exception as exc:
+        logger.error(f"[TelemetryDB] Failed to insert feedback event: {exc}")
+        return False
+
+
+async def insert_feedback_event_async(
+    recommendation_id: str,
+    event_type: str,
+    anime_id: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
+) -> bool:
+    """Non-blocking asynchronous wrapper for feedback event insertion."""
+    return await asyncio.to_thread(
+        insert_feedback_event,
+        recommendation_id,
+        event_type,
+        anime_id,
+        metadata,
+        user_id,
+        client_ip,
+    )

@@ -9,13 +9,14 @@ def config() -> dict:
     """
     Returns PostgreSQL connection parameters.
     
-    Supports Supabase PgBouncer transaction pooler (port 6543)
-    as well as direct/local PostgreSQL (port 5432).
+    Targets Supabase Supavisor transaction pooler (port 6543) with sslmode=require
+    in production or hosted environments, with safe fallbacks for local development (port 5432).
     """
     host = os.getenv("DB_HOST", "localhost")
+    is_prod = os.getenv("ENV", "").lower() == "production" or os.getenv("ENVIRONMENT", "").lower() == "production"
     
-    # Auto-detect Supabase pooler default port (6543) vs direct Postgres port (5432)
-    default_port = 6543 if ("pooler" in host or "supabase.co" in host) else 5432
+    # Target Supabase pooler default port (6543) in production or pooler hosts, else direct port (5432)
+    default_port = 6543 if (is_prod or "pooler" in host or "supabase.co" in host) else 5432
     raw_port = os.getenv("DB_PORT")
     port = int(raw_port) if raw_port and raw_port.isdigit() else default_port
     
@@ -23,8 +24,8 @@ def config() -> dict:
     user = os.getenv("DB_USER", "postgres")
     password = os.getenv("DB_PASSWORD", "")
     
-    # Supabase strictly mandates SSL; local development can default to 'prefer'
-    default_ssl = "require" if ("pooler" in host or "supabase.co" in host) else "prefer"
+    # Supabase mandates SSL require in production; local development defaults to 'prefer'
+    default_ssl = "require" if (is_prod or "pooler" in host or "supabase.co" in host) else "prefer"
     sslmode = os.getenv("DB_SSLMODE", default_ssl)
     
     params = {

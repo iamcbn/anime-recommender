@@ -2,6 +2,7 @@
 import { env } from '../config/env';
 import { supabase } from './supabase';
 import type { KeyListResponse, CreateKeyResponse, ApiErrorResponse } from '../types/apiKeys';
+import type { FeedbackEvent } from '../types/chat';
 
 export class ApiClientError extends Error {
   public status: number;
@@ -127,3 +128,33 @@ export const devKeysApi = {
     await request<void>(`/dev/keys/${keyId}`, { method: 'DELETE' });
   },
 };
+
+/**
+ * Sends explicit user ground-truth feedback (thumbs_up, thumbs_down, more_like_this, watchlist_add)
+ * directly to the first-party /feedback endpoint, bypassing ad-blockers.
+ */
+export async function sendFeedback(event: FeedbackEvent): Promise<void> {
+  const url = `${env.API_BASE_URL}/feedback`;
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers.set('Authorization', `Bearer ${session.access_token}`);
+    }
+  } catch {
+    // Graceful fallback for anonymous guest visitors
+  }
+
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(event),
+    });
+  } catch (err) {
+    // Non-blocking telemetry feedback must never disrupt client UI
+    console.warn('[Feedback] Failed to post user feedback event:', err);
+  }
+}

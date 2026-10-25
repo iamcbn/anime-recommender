@@ -1,6 +1,8 @@
 // frontend/src/components/chat/AnimeCard.tsx
 import React, { useState } from 'react';
-import { Check, Sparkles, Film, Tv, ChevronDown, ChevronUp, ImageOff, Ban, Loader2 } from 'lucide-react';
+import { Check, Sparkles, Film, Tv, ChevronDown, ChevronUp, ImageOff, Ban, Loader2, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { sendFeedback } from '../../lib/apiClient';
+import { trackRecommendationClicked } from '../../lib/analytics';
 import type { AnimeCandidate } from '../../types/chat';
 import { useUserPreferences } from '../../hooks/useUserPreferences';
 import { streamSinglePitch } from '../../lib/chatStream';
@@ -12,6 +14,8 @@ export interface AnimeCardProps {
   onMoreLikeThis: (title: string) => void;
   isHighlighted?: boolean;
   query?: string;
+  recommendationId?: string;
+  position?: number;
 }
 
 /**
@@ -42,6 +46,8 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
   onMoreLikeThis,
   isHighlighted = false,
   query = '',
+  recommendationId,
+  position,
 }) => {
   const { isSeen, toggleSeen, isGenreDisliked, toggleDislikedGenre } = useUserPreferences();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -50,6 +56,48 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
   const [isStreamingPitch, setIsStreamingPitch] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [feedbackStatus, setFeedbackStatus] = useState<'thumbs_up' | 'thumbs_down' | null>(null);
+
+  const handleFeedback = (type: 'thumbs_up' | 'thumbs_down') => {
+    setFeedbackStatus(type);
+    if (recommendationId) {
+      sendFeedback({
+        recommendation_id: recommendationId,
+        event_type: type,
+        anime_id: anime.id,
+        metadata: { title },
+      });
+    }
+  };
+
+  const handleToggleSeen = () => {
+    toggleSeen(anime.id);
+    if (!seen && recommendationId) {
+      sendFeedback({
+        recommendation_id: recommendationId,
+        event_type: 'watchlist_add',
+        anime_id: anime.id,
+        metadata: { title },
+      });
+    }
+  };
+
+  const handleMoreLikeThisClick = () => {
+    if (recommendationId) {
+      sendFeedback({
+        recommendation_id: recommendationId,
+        event_type: 'more_like_this',
+        anime_id: anime.id,
+        metadata: { title },
+      });
+    }
+    trackRecommendationClicked({
+      anime_id: anime.id,
+      position,
+      format: anime.format || undefined,
+    });
+    onMoreLikeThis(title);
+  };
 
   const title =
     anime.title_userPreferred ||
@@ -355,7 +403,7 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
           {/* Seen Toggle */}
           <button
             type="button"
-            onClick={() => toggleSeen(anime.id)}
+            onClick={handleToggleSeen}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 select-none ${
               seen
                 ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs focus:ring-emerald-500'
@@ -378,10 +426,40 @@ export const AnimeCard: React.FC<AnimeCardProps> = ({
               <span>Curator Note {showCuratorNote ? '▴' : '▾'}</span>
             </button>
 
+            {/* First-Party Feedback Buttons (Thumbs Up / Down) */}
+            <div className="inline-flex items-center gap-1 border border-slate-200 dark:border-dark-700 rounded-lg p-0.5 bg-slate-50 dark:bg-dark-900/60">
+              <button
+                type="button"
+                onClick={() => handleFeedback('thumbs_up')}
+                className={`p-1 rounded-md transition-colors focus:outline-none ${
+                  feedbackStatus === 'thumbs_up'
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                }`}
+                aria-label="Thumbs up recommendation"
+                title="Thumbs up"
+              >
+                <ThumbsUp className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFeedback('thumbs_down')}
+                className={`p-1 rounded-md transition-colors focus:outline-none ${
+                  feedbackStatus === 'thumbs_down'
+                    ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                }`}
+                aria-label="Thumbs down recommendation"
+                title="Thumbs down"
+              >
+                <ThumbsDown className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             {/* More Like This Button */}
             <button
               type="button"
-              onClick={() => onMoreLikeThis(title)}
+              onClick={handleMoreLikeThisClick}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand hover:text-brand-hover bg-brand/10 hover:bg-brand/15 dark:bg-brand/20 dark:hover:bg-brand/30 transition-colors focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-1 select-none"
             >
               <Sparkles className="w-3.5 h-3.5" />

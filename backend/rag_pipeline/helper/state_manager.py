@@ -32,7 +32,22 @@ class InMemoryStateStore:
     def __init__(self):
         self._sessions: Dict[str, tuple[float, int, List[Dict[str, Any]]]] = {}
         self._seen_ids: Dict[str, Set[int]] = defaultdict(set)
+        self._query_cache: Dict[str, tuple[float, int, Dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
+
+    async def get_query_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        async with self._lock:
+            if key not in self._query_cache:
+                return None
+            created_at, ttl, payload = self._query_cache[key]
+            if time.time() - created_at > ttl:
+                del self._query_cache[key]
+                return None
+            return dict(payload)
+
+    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: int = 86400):
+        async with self._lock:
+            self._query_cache[key] = (time.time(), ttl, dict(payload))
 
     async def get_session(self, session_id: str) -> List[Dict[str, Any]]:
         async with self._lock:
@@ -80,6 +95,7 @@ class InMemoryStateStore:
         async with self._lock:
             self._sessions.clear()
             self._seen_ids.clear()
+            self._query_cache.clear()
 
 
 class StateManager:
@@ -272,6 +288,50 @@ class StateManager:
             await self.memory_store.add_seen_ids(user_id, clean_ids)
 
         await self._safe_execute(_redis_op, _fallback_op, f"record_seen_ids({user_id})")
+
+    # -------------------------------------------------------------------------
+    # EXACT NORMALIZED QUERY HASH CACHING (TTL = 24H)
+    # -------------------------------------------------------------------------
+    async def get_query_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches cached query recommendation payload by normalized query hash key.
+        Guarantees sub-150ms circuit breaker protection.
+        """
+        if not key:
+            return None
+
+        async def _redis_op():
+            raw = await self.redis.get(key)
+            if not raw:
+                return None
+            if isinstance(raw, str):
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return None
+            if isinstance(raw, dict):
+                return raw
+            return None
+
+        async def _fallback_op():
+            return await self.memory_store.get_query_cache(key)
+
+        return await self._safe_execute(_redis_op, _fallback_op, f"get_query_cache({key})")
+
+    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: int = 86400) -> None:
+        """
+        Persists exact normalized query payload in Upstash Redis with 24-hour TTL (86400s).
+        """
+        if not key or not payload:
+            return
+
+        async def _redis_op():
+            await self.redis.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
+
+        async def _fallback_op():
+            await self.memory_store.set_query_cache(key, payload, ttl=ttl)
+
+        await self._safe_execute(_redis_op, _fallback_op, f"set_query_cache({key})")
 
     async def clear_session(self, session_id: str):
         """Clears a session from both Redis and memory store."""

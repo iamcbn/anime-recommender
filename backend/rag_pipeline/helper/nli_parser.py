@@ -45,6 +45,12 @@ CONVERSATIONAL_CUES_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Negation and hard filter patterns on turn-1 queries
+TURN1_NEGATION_FILTER_REGEX = re.compile(
+    r"\b(no|without)\b|\b(?:after|before|from|since)\s+\d{4}\b|\b(?:tv|movie|ova|ona)\s+only\b",
+    re.IGNORECASE,
+)
+
 
 # ----------------------
 # PYDANTIC OUTPUT SCHEMA
@@ -54,6 +60,9 @@ class NLIOutput(BaseModel):
     standalone_query: str = Field(description="Self-contained anime search query resolving pronouns and references")
     avoid_genres: List[str] = Field(default_factory=list, description="List of genres to explicitly exclude")
     avoid_tropes: List[str] = Field(default_factory=list, description="List of plot tropes, themes, or elements to avoid")
+    media_format: Optional[str] = Field(default=None, description="Media format filter (e.g. TV, MOVIE, OVA, ONA, SPECIAL)")
+    min_year: Optional[int] = Field(default=None, description="Earliest release year (inclusive)")
+    max_year: Optional[int] = Field(default=None, description="Latest release year (inclusive)")
     intent: Literal["new_search", "refine", "exclude_title", "more_like", "queue_more", "paginate"] = Field(
         default="refine",
         description="Conversational intent classification"
@@ -67,17 +76,22 @@ class NLIOutput(BaseModel):
 def should_bypass_nli(query: str, history: Optional[List[dict]]) -> bool:
     """
     Cost safeguard: Skip NLI parsing if conversational resolution is unnecessary ($0 spent).
-    - If history is empty or None: return True (turn 1 bypass: $0 spent).
-    - If query does not contain conversational reference indicators (e.g. regex for cues like
-      \b(more|less|similar|another|instead|not|without|exclude|too|also|earlier|previous|like that|that one|first one|second one|show me|give me|next)\b),
-      and is a long standalone prompt: return True (bypass: $0 spent).
-    - Otherwise return False (run NLI parsing).
+    - If history is empty or None:
+      - If query contains explicit negation or hard filter patterns (e.g. 'no', 'without', 'after 2015'):
+        return False (run NLI to extract structured constraints on turn 1).
+      - Otherwise: return True (turn 1 bypass: $0 spent).
+    - If history is present:
+      - If query contains conversational indicators or cues: return False (run NLI).
+      - If query is a long standalone prompt: return True (bypass: $0 spent).
+      - Otherwise return False (short follow-up query runs NLI).
     """
-    if not history:
-        return True
-
     cleaned_query = (query or "").strip()
     if not cleaned_query:
+        return True
+
+    if not history:
+        if TURN1_NEGATION_FILTER_REGEX.search(cleaned_query):
+            return False
         return True
 
     has_cues = bool(CONVERSATIONAL_CUES_REGEX.search(cleaned_query))
@@ -106,7 +120,8 @@ class NLIParser:
         "You are an anime Natural Language Interface (NLI) query parser.\n"
         "Analyze multi-turn conversation history and the latest user request for anime recommendations.\n"
         "Resolve all conversational references (pronouns, relative references, exclusions, comparisons) "
-        "and produce a structured query specification.\n\n"
+        "and produce a structured query specification.\n"
+        "The latest user request is enclosed within <user_query>...</user_query> XML tags to ensure prompt boundary security.\n\n"
         "Guidelines:\n"
         "1. `standalone_query`: Provide a self-contained anime search query that incorporates core "
         "themes, genres, or premises from context, resolving pronouns like 'it', 'that', 'them', or relative "
@@ -116,7 +131,9 @@ class NLIParser:
         "2. `avoid_genres`: List explicit genres to exclude (e.g. 'less gory' -> ['Horror', 'Gore'], "
         "'no mecha' -> ['Mecha'], 'without romance' -> ['Romance'], 'less violent' -> ['Action', 'Horror', 'Gore']). Capitalize standard genre names.\n"
         "3. `avoid_tropes`: List plot tropes, narrative elements, or themes to avoid (e.g. ['harem', 'ecchi', 'isekai', 'overpowered MC', 'violence', 'gore']).\n"
-        "4. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', or 'paginate'."
+        "4. `media_format`: Extract media format constraints when specified (e.g. 'movie' -> 'MOVIE'; 'tv series' -> 'TV'; 'ova' -> 'OVA'). If unspecified, return null.\n"
+        "5. `min_year` and `max_year`: Extract release year boundaries (e.g. 'after 2015' -> min_year=2015; 'before 2000' -> max_year=2000; 'from the 90s' -> min_year=1990, max_year=1999). If unspecified, return null.\n"
+        "6. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', or 'paginate'."
     )
 
     def __init__(
@@ -142,7 +159,7 @@ class NLIParser:
                     if role == "assistant" and len(content_str) > 300:
                         content_str = content_str[:300] + "..."
                     messages.append({"role": role, "content": content_str})
-        messages.append({"role": "user", "content": query})
+        messages.append({"role": "user", "content": f"<user_query>{query}</user_query>"})
         return messages
 
     async def parse_async(

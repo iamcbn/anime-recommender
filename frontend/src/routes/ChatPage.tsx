@@ -19,6 +19,13 @@ import { AnimeCard } from '../components/chat/AnimeCard';
 import { ConciergePitch } from '../components/chat/ConciergePitch';
 import { PreferenceDrawer } from '../components/chat/PreferenceDrawer';
 import { ErrorBoundary } from '../components/common/ErrorBoundary';
+import {
+  initAnalytics,
+  trackLandingPageViewed,
+  trackSearchSubmitted,
+  trackRecommendationRendered,
+  trackRecommendationClicked,
+} from '../lib/analytics';
 
 export const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -54,6 +61,12 @@ export const ChatPage: React.FC = () => {
     return () => clearInterval(timer);
   }, [conversationState, rateLimitCountdown]);
 
+  // Initialise analytics and track landing page view
+  useEffect(() => {
+    initAnalytics();
+    trackLandingPageViewed();
+  }, []);
+
   // Clean up ongoing stream on unmount and ensure conversation state resets
   useEffect(() => {
     setConversationState('idle');
@@ -88,6 +101,7 @@ export const ChatPage: React.FC = () => {
   }, []);
 
   const handleSelectAnime = useCallback((animeId: number) => {
+    trackRecommendationClicked({ anime_id: animeId });
     const el = document.getElementById(`anime-card-${animeId}`);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -113,6 +127,12 @@ export const ChatPage: React.FC = () => {
       setHasMore(true);
       setIsLoadingMore(false);
       setQuery('');
+
+      trackSearchSubmitted({
+        has_filters: Boolean(preferences.disliked_genres?.length || preferences.seen_ids?.length),
+        filter_count: (preferences.disliked_genres?.length || 0) + (preferences.seen_ids?.length || 0),
+        top_k: 5,
+      });
 
       const now = Date.now();
       const userMsgId = `user-${now}`;
@@ -163,6 +183,11 @@ export const ChatPage: React.FC = () => {
           signal: controller.signal,
           onMetadata: (metadata) => {
             const fetched = metadata.candidates || [];
+            const recId = metadata.recommendation_id || metadata.request_id;
+            trackRecommendationRendered({
+              result_count: fetched.length,
+              has_recs: fetched.length > 0,
+            });
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === asstMsgId
@@ -170,6 +195,8 @@ export const ChatPage: React.FC = () => {
                       ...m,
                       candidates: fetched,
                       timings: metadata.timings || m.timings,
+                      recommendation_id: recId,
+                      request_id: recId,
                     }
                   : m
               )
@@ -528,11 +555,13 @@ export const ChatPage: React.FC = () => {
                           </div>
 
                           <div className="grid grid-cols-1 gap-4">
-                            {message.candidates.map((anime) => (
+                            {message.candidates.map((anime, index) => (
                               <AnimeCard
                                 key={anime.id}
                                 anime={anime}
                                 query={activeQuery}
+                                recommendationId={message.recommendation_id}
+                                position={index}
                                 onMoreLikeThis={handleMoreLikeThis}
                               />
                             ))}

@@ -173,68 +173,131 @@ class Preprocessor:
         return cleaned
 
     @staticmethod
+    def extract_themes_and_demographics(tags):
+        """
+        Extract demographic and theme tags from AniList tags, sorted by AniList rank.
+        Identifies tags marked as Demographic or Theme categories, as well as canonical
+        demographic labels (e.g. Shounen, Shoujo, Seinen, Josei, Kids).
+        """
+        KNOWN_DEMOGRAPHICS = {"shounen", "shoujo", "seinen", "josei", "kids", "kodomomuke"}
+        try:
+            if isinstance(tags, str):
+                tags = json.loads(tags)
+        except Exception:
+            return []
+
+        if not isinstance(tags, list):
+            return []
+
+        valid_tags = [t for t in tags if isinstance(t, dict) and t.get("name")]
+        valid_tags.sort(key=lambda x: x.get("rank", 0), reverse=True)
+
+        selected = []
+        seen = set()
+        for t in valid_tags:
+            name = str(t["name"]).strip()
+            name_lower = name.lower()
+            category = str(t.get("category", "")).strip().lower()
+            if category in ("demographic", "theme") or name_lower in KNOWN_DEMOGRAPHICS:
+                if name_lower not in seen:
+                    seen.add(name_lower)
+                    selected.append(name)
+        return selected
+
+    @staticmethod
+    def extract_community_tags(tags, exclude_names=None, top_n: int = 15):
+        """
+        Extract general community tags sorted by AniList rank (descending),
+        excluding tags already accounted for in demographics/themes, capped at top_n.
+        """
+        exclude_set = {n.lower() for n in (exclude_names or [])}
+        try:
+            if isinstance(tags, str):
+                tags = json.loads(tags)
+        except Exception:
+            return []
+
+        if not isinstance(tags, list):
+            return []
+
+        valid_tags = [t for t in tags if isinstance(t, dict) and t.get("name")]
+        valid_tags.sort(key=lambda x: x.get("rank", 0), reverse=True)
+
+        selected = []
+        for t in valid_tags:
+            name = str(t["name"]).strip()
+            if name.lower() not in exclude_set:
+                selected.append(name)
+                if len(selected) >= top_n:
+                    break
+        return selected
+
+    @staticmethod
     def build_embedding_text(row):
+        """
+        Builds the composite document representation for dense vector embedding:
+        Title (EN/Romaji) | Genres | Themes & Demographics | Top Community Tags | Synopsis
+
+        Structured metadata and tag tokens strictly precede the synopsis to ensure
+        critical ranking signals remain within MiniLM's sequence truncation window.
+        """
         parts = []
 
-        # Description FIRST — anchors SBERT in semantic/description space.
-        # Putting metadata before the description skews the embedding toward
-        # structured tokens (Format:, Year:, Studios:) and away from the
-        # semantic content that user queries are written against.
-        if isinstance(row.get("description"), str):
-            parts.append(row["description"])
+        # 1. Title (EN/Romaji)
+        title_en = row.get("title_english")
+        title_ro = row.get("title_romaji")
+        title_up = row.get("title_userPreferred")
 
-        # Title aliases next — strong signal for exact-match queries
-        if row.get("name_text"):
-            parts.append(row["name_text"])
+        en_str = str(title_en).strip() if (title_en and pd.notna(title_en) and str(title_en).strip()) else ""
+        ro_str = str(title_ro).strip() if (title_ro and pd.notna(title_ro) and str(title_ro).strip()) else ""
+        up_str = str(title_up).strip() if (title_up and pd.notna(title_up) and str(title_up).strip()) else ""
 
-        # Structured metadata
-        if pd.notna(row.get("format")) and str(row.get("format")).strip():
-            parts.append(f"Format: {row['format']}")
-            
-        if pd.notna(row.get("seasonYear")):
-            try:
-                parts.append(f"Year: {int(row['seasonYear'])}")
-            except (ValueError, TypeError):
-                pass
-                
-        if pd.notna(row.get("source")) and str(row.get("source")).strip():
-            parts.append(f"Source: {row['source']}")
-            
-        if pd.notna(row.get("countryOfOrigin")) and str(row.get("countryOfOrigin")).strip():
-            parts.append(f"Country: {row['countryOfOrigin']}")
-            
-        studios = Preprocessor.parse_json(row.get("studios"))
-        if studios:
-            studio_names = []
-            for s in studios:
-                node = s.get("node", {})
-                if node.get("isAnimationStudio") and node.get("name"):
-                    studio_names.append(node["name"])
-            if studio_names:
-                parts.append("Studios: " + ", ".join(studio_names))
+        if en_str and ro_str and en_str.lower() != ro_str.lower():
+            title_part = f"{en_str} ({ro_str})"
+        elif en_str:
+            title_part = en_str
+        elif ro_str:
+            title_part = ro_str
+        elif up_str:
+            title_part = up_str
+        elif row.get("name_text"):
+            title_part = str(row["name_text"]).strip()
+        else:
+            title_part = ""
 
-        if isinstance(row.get("genres"), list) and row["genres"]:
-            parts.append("Genres: " + ", ".join(row["genres"]))
+        if title_part:
+            parts.append(title_part)
 
-        # Top tags sorted by AniList rank (most relevant first), capped at 15,
-        # spoiler and adult tags excluded.
-        tag_names = Preprocessor.extract_tags(row.get("tags"), top_n=15)
-        if tag_names:
-            parts.append("Tags: " + ", ".join(tag_names))
+        # 2. Genres
+        genres_val = row.get("genres")
+        if isinstance(genres_val, str):
+            genres_val = Preprocessor.parse_json(genres_val)
+        if isinstance(genres_val, (list, tuple)) and genres_val:
+            clean_genres = [str(g).strip() for g in genres_val if g and str(g).strip()]
+            if clean_genres:
+                parts.append("Genres: " + ", ".join(clean_genres))
 
-        # Main characters (MAIN role only, up to 8 names)
-        char_names = Preprocessor.extract_main_characters(row.get("characters"), top_n=8)
-        if char_names:
-            parts.append("Main Characters: " + ", ".join(char_names))
+        # 3. Themes & Demographics
+        themes_demos = Preprocessor.extract_themes_and_demographics(row.get("tags"))
+        if themes_demos:
+            parts.append("Themes & Demographics: " + ", ".join(themes_demos))
 
-        # Key creative staff: Director, Original Creator, Series Composition
-        staff_entries = Preprocessor.extract_key_staff(row.get("staff"))
-        if staff_entries:
-            parts.append("Staff: " + ", ".join(staff_entries))
+        # 4. Top Community Tags (preceding synopsis for truncation protection)
+        comm_tags = Preprocessor.extract_community_tags(row.get("tags"), exclude_names=themes_demos, top_n=15)
+        if comm_tags:
+            parts.append("Tags: " + ", ".join(comm_tags))
 
-        final_text = " ".join(parts)
-        # FastText strictly rejects newlines, so we must purge any that slipped through
-        return final_text.replace("\n", " ").replace("\r", "")
+        # 5. Synopsis
+        desc = row.get("description")
+        if not desc or pd.isna(desc):
+            desc = row.get("synopsis")
+        if isinstance(desc, str) and desc.strip():
+            clean_desc = desc.strip()
+            parts.append(clean_desc)
+
+        final_text = " | ".join(parts)
+        # FastText strictly rejects raw newlines, so purge carriage returns and line feeds
+        return final_text.replace("\n", " ").replace("\r", " ").strip()
 
     # ----------------------------
     # FIELD EXTRACTORS

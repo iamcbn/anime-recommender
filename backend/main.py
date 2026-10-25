@@ -5,7 +5,7 @@ import uuid
 import hmac
 import asyncio
 import logging
-from typing import Annotated, Optional, Union, List, Dict, Any, Tuple
+from typing import Annotated, Optional, Union, List, Dict, Any, Tuple, Literal
 from collections import defaultdict
 from datetime import timedelta, datetime
 
@@ -23,9 +23,10 @@ from fastapi import (
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field, field_validator
 
-from backend.rag_pipeline.rag_pipeline import rag_pipeline, async_rag_pipeline
+from backend.rag_pipeline.rag_pipeline import rag_pipeline, async_rag_pipeline, retriever
 from backend.rag_pipeline.orchestrator import orchestrator
 from backend.rag_pipeline.helper.guardrails import DomainGuardrails
 from backend.rag_pipeline.helper.rate_limiter import (
@@ -47,6 +48,7 @@ from backend.telemetry.logger import (
     log_recommendation_event,
     OPENAI_KEY_REDACT_REGEX,
 )
+from backend.telemetry.db import insert_feedback_event
 
 logger = logging.getLogger("anime_recommender.main")
 
@@ -58,7 +60,14 @@ _vram = f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB"
 print(f"🚀 [Hardware Acceleration] Active PyTorch Device: {'CUDA (GPU)' if _cuda_available else 'CPU'} | Model GPU: {_device_name} | VRAM: {_vram}")
 logger.info(f"[Hardware Acceleration] Active PyTorch Device: {'CUDA (GPU)' if _cuda_available else 'CPU'} | Model GPU: {_device_name} | VRAM: {_vram}")
 
-app = FastAPI(title="Anime Recommendation API")
+is_production = os.getenv("ENV", "").lower() == "production" or os.getenv("ENVIRONMENT", "").lower() == "production"
+
+app = FastAPI(
+    title="Anime Recommendation API",
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json",
+)
 
 # ----------------------
 # CORS MIDDLEWARE
@@ -187,7 +196,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     msg = sanitize_secrets(str(exc))
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"error": {"code": "validation_error", "message": msg}, "detail": exc.errors()}
+        content={"error": {"code": "validation_error", "message": msg}, "detail": jsonable_encoder(exc.errors())}
     )
 
 
@@ -354,10 +363,60 @@ async def get_admin_key(key_ctx: ApiKeyContext = Depends(get_api_key)) -> ApiKey
 # REQUEST / RESPONSE MODELS
 # ----------------------
 
+CONTROL_CHARS_REGEX = re.compile(r"[\x01-\x1f\x7f-\x9f]")
+
+
+def sanitize_input_query(v: Any) -> str:
+    if not isinstance(v, str):
+        v = str(v or "")
+    v = v.replace(chr(0), "")
+    cleaned = CONTROL_CHARS_REGEX.sub("", v).strip()
+    if len(cleaned) < 2:
+        raise ValueError("Query must contain at least 2 printable characters")
+    if len(cleaned) > 350:
+        raise ValueError("Query cannot exceed 350 characters")
+    return cleaned
+
+
+def validate_bounded_top_k(v: Any) -> int:
+    try:
+        val = int(v)
+    except (ValueError, TypeError):
+        raise ValueError("top_k must be an integer")
+    if val < 1:
+        raise ValueError("top_k must be at least 1")
+    if val > 25:
+        raise ValueError("top_k cannot exceed 25")
+    return val
+
+
 class RecommendRequest(BaseModel):
-    query: Annotated[str, Query(description="The query to recommend anime for", min_length=2)]
-    top_k: int = 20
+    query: str = Field(..., description="The query to recommend anime for", min_length=2, max_length=350)
+    top_k: int = Field(default=20, ge=1, le=25, description="Number of candidate cards to retrieve")
     allow_adult: bool = False
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def validate_query(cls, v: Any) -> str:
+        return sanitize_input_query(v)
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def validate_top_k(cls, v: Any) -> int:
+        return validate_bounded_top_k(v)
+
+
+class FeedbackRequest(BaseModel):
+    recommendation_id: uuid.UUID = Field(..., description="UUID of the recommendation turn (request_id)")
+    event_type: Literal["thumbs_up", "thumbs_down", "more_like_this", "watchlist_add"] = Field(
+        ..., description="Explicit user feedback signal"
+    )
+    anime_id: Optional[int] = Field(default=None, description="Optional target anime ID")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Optional arbitrary context metadata")
+
+    model_config = {
+        "extra": "ignore",
+    }
 
 
 class PublicRecommendResponse(BaseModel):
@@ -382,13 +441,23 @@ RecommendResponse = AdminRecommendResponse
 
 
 class ChatRequest(BaseModel):
-    query: Annotated[str, Query(description="The conversational prompt or mood query", min_length=2, max_length=500)]
-    top_k: int = Field(default=5, ge=1, le=20, description="Number of candidate cards to retrieve")
+    query: str = Field(..., description="The conversational prompt or mood query", min_length=2, max_length=350)
+    top_k: int = Field(default=5, ge=1, le=25, description="Number of candidate cards to retrieve")
     allow_adult: bool = Field(default=False, description="Whether to include 18+ adult titles")
     session_id: Optional[str] = Field(default=None, description="Optional multi-turn session ID")
     user_id: Optional[str] = Field(default=None, description="Optional user ID for cross-session watched/dropped history persistence")
     seen_ids: Optional[list[int]] = Field(default=None, description="Optional list of anime IDs to exclude")
     disliked_genres: Optional[list[str]] = Field(default=None, description="Optional list of genres to avoid")
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def validate_query(cls, v: Any) -> str:
+        return sanitize_input_query(v)
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def validate_top_k(cls, v: Any) -> int:
+        return validate_bounded_top_k(v)
 
 
 # ----------------------
@@ -508,6 +577,34 @@ async def _execute_recommend_flow(
 @app.get("/")
 async def root():
     return {"message": "Welcome to the Anime Recommendation API. Use the /recommend endpoint to get recommendations."}
+
+
+@app.get("/health", tags=["System"])
+async def health_check():
+    """
+    Uptime and liveness health check endpoint.
+    Executes SELECT 1 on PostgreSQL via the CPU Gateway connection pool.
+    Guaranteed to never invoke ModelWorker or wake the GPU.
+    """
+    try:
+        def _ping_db():
+            with retriever.get_cursor(timeout=3.0) as cur:
+                cur.execute("SELECT 1;")
+                return cur.fetchone()
+
+        row = await asyncio.to_thread(_ping_db)
+        if row and row[0] == 1:
+            return {"status": "healthy", "database": "connected"}
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "database": "unexpected_result"},
+        )
+    except Exception as exc:
+        logger.error(f"[HealthCheck] Database connection check failed: {exc}")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "database": "disconnected", "detail": sanitize_secrets(str(exc))},
+        )
 
 
 @app.post("/recommend", response_model=PublicRecommendResponse)
@@ -655,11 +752,45 @@ async def _resolve_chat_auth_and_rate_limit(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        limit_anon = int(os.getenv("RATE_LIMIT_ANON", "10"))
+        window_anon = int(os.getenv("RATE_LIMIT_ANON_WINDOW", "60"))
+        limit_auth = int(os.getenv("RATE_LIMIT_AUTH", "30"))
+        window_auth = int(os.getenv("RATE_LIMIT_AUTH_WINDOW", "60"))
+
+        if dev_user.is_anonymous:
+            # Anonymous Supabase Sign-in JWT (10 req/min sliding window)
+            anon_user_id = dev_user.user_id
+            is_limited, remaining, retry_after = await rate_limiter.check_rate_limit(
+                identifier=anon_user_id,
+                limit=limit_anon,
+                window=window_anon,
+                key_prefix="ratelimit:chat:anon",
+            )
+            if is_limited:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
+                    headers={
+                        "Retry-After": str(retry_after),
+                        "X-RateLimit-Limit": str(limit_anon),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(retry_after),
+                    },
+                )
+
+            rate_headers = {
+                "X-RateLimit-Limit": str(limit_anon),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(retry_after),
+            }
+            return anon_user_id, None, "anon_jwt", rate_headers
+
+        # Permanent Authenticated User (30 req/min sliding window)
         auth_user_id = dev_user.user_id
         is_limited, remaining, retry_after = await rate_limiter.check_rate_limit(
             identifier=auth_user_id,
-            limit=20,
-            window=3600,
+            limit=limit_auth,
+            window=window_auth,
             key_prefix="ratelimit:chat:auth",
         )
         if is_limited:
@@ -668,24 +799,27 @@ async def _resolve_chat_auth_and_rate_limit(
                 detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
                 headers={
                     "Retry-After": str(retry_after),
-                    "X-RateLimit-Limit": "20",
+                    "X-RateLimit-Limit": str(limit_auth),
                     "X-RateLimit-Remaining": "0",
                     "X-RateLimit-Reset": str(retry_after),
                 },
             )
 
         rate_headers = {
-            "X-RateLimit-Limit": "20",
+            "X-RateLimit-Limit": str(limit_auth),
             "X-RateLimit-Remaining": str(remaining),
             "X-RateLimit-Reset": str(retry_after),
         }
         return auth_user_id, None, "auth", rate_headers
 
-    # Tier 3: Anonymous Visitor (no auth headers provided)
+    # Tier 3: Anonymous Visitor (no auth headers provided, 10 req/min per IP)
+    limit_anon = int(os.getenv("RATE_LIMIT_ANON", "10"))
+    window_anon = int(os.getenv("RATE_LIMIT_ANON_WINDOW", "60"))
+
     is_limited, remaining, retry_after = await rate_limiter.check_rate_limit(
         identifier=client_ip,
-        limit=5,
-        window=900,
+        limit=limit_anon,
+        window=window_anon,
         key_prefix="ratelimit:chat:anon",
     )
     if is_limited:
@@ -694,14 +828,14 @@ async def _resolve_chat_auth_and_rate_limit(
             detail={"error": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded. Try again later."}},
             headers={
                 "Retry-After": str(retry_after),
-                "X-RateLimit-Limit": "5",
+                "X-RateLimit-Limit": str(limit_anon),
                 "X-RateLimit-Remaining": "0",
                 "X-RateLimit-Reset": str(retry_after),
             },
         )
 
     rate_headers = {
-        "X-RateLimit-Limit": "5",
+        "X-RateLimit-Limit": str(limit_anon),
         "X-RateLimit-Remaining": str(remaining),
         "X-RateLimit-Reset": str(retry_after),
     }
@@ -769,3 +903,46 @@ async def chat_endpoint(
         media_type="text/event-stream",
         headers=response_headers,
     )
+
+@app.post("/feedback", status_code=status.HTTP_201_CREATED)
+async def submit_feedback(
+    request: FeedbackRequest,
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    First-party feedback event ingestion endpoint (Loop 2 Task 2B).
+    Accepts explicit user feedback signals (thumbs_up, thumbs_down, more_like_this, watchlist_add)
+    referencing recommendation_id. Non-blocking asynchronous insertion bypasses client-side ad-blockers.
+    """
+    client_ip = rate_limiter.extract_client_ip(raw_request)
+
+    # Optional identity extraction from auth header if present
+    auth_header = raw_request.headers.get("Authorization")
+    user_id = None
+    if auth_header:
+        parts = auth_header.strip().split()
+        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else parts[0].strip()
+        if token and not token.startswith("ar_live_"):
+            try:
+                jwks = get_jwks_service()
+                dev_user = jwks.verify_token(token)
+                user_id = dev_user.user_id
+            except Exception:
+                pass
+
+    background_tasks.add_task(
+        insert_feedback_event,
+        recommendation_id=str(request.recommendation_id),
+        event_type=request.event_type,
+        anime_id=request.anime_id,
+        metadata=request.metadata,
+        user_id=user_id,
+        client_ip=client_ip,
+    )
+
+    return {
+        "status": "recorded",
+        "recommendation_id": str(request.recommendation_id),
+        "event_type": request.event_type,
+    }

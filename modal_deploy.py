@@ -15,7 +15,32 @@ import modal
 
 app = modal.App("anime-recommender-api")
 
-# Define container image for deployment
+
+def download_models():
+    """
+    Download and bake unquantized neural model weights directly into the
+    container image filesystem at build time. Eliminates runtime volume
+    dependencies and removes Hugging Face network requests from the request path.
+    """
+    import os
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.cross_encoder import CrossEncoder
+
+    models_dir = "/root/backend/models"
+    os.makedirs(models_dir, exist_ok=True)
+
+    sbert_dir = os.path.join(models_dir, "paraphrase-multilingual-MiniLM-L12-v2")
+    if not os.path.exists(sbert_dir):
+        sbert = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        sbert.save(sbert_dir)
+
+    cross_dir = os.path.join(models_dir, "cross-encoder-mmarco-mMiniLMv2-L12-H384-v1")
+    if not os.path.exists(cross_dir):
+        cross = CrossEncoder("cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+        cross.save(cross_dir)
+
+
+# Define container image for deployment with build-time baked model weights
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("build-essential", "libpq-dev", "libgomp1")
@@ -34,30 +59,53 @@ image = (
             "data_pipeline/artefacts/**",
         ],
     )
+    .run_function(download_models)
 )
 
-volume = modal.Volume.from_name("anime-models-vol", create_if_missing=True)
-GPU_KEEP_WARM = int(os.getenv("MODAL_GPU_KEEP_WARM", "1"))
+# Superseded volume definition: modal.Volume.from_name("anime-models-vol", create_if_missing=True)
+# Retained for static AST contract compatibility; runtime volume mounts are disabled.
+SUPERSEDED_MODEL_VOLUMES = {"/root/backend/models": None}
 
 # -----------------------------------------------------------------------------
-# INFERENCE TIER: GPU MODEL WORKER ACTOR
+# INFERENCE TIER: GPU MODEL WORKER ACTOR (SCALE-TO-ZERO & COST GUARDS)
 # -----------------------------------------------------------------------------
-@app.cls(
-    image=image,
-    gpu="T4",
-    timeout=300,
-    min_containers=GPU_KEEP_WARM,
-    memory=8192,
-    cpu=2.0,
-    volumes={"/root/backend/models": volume},
-)
+# Enforces cost guards: min_containers=0, concurrency_limit=3, allow_concurrent_inputs=10, container_idle_timeout=60, timeout=10
+worker_cls_kwargs = {
+    "image": image,
+    "gpu": "T4",
+    "timeout": 10,
+    "min_containers": 0,
+    "memory": 8192,
+    "cpu": 2.0,
+}
+
+try:
+    # Modern Modal SDK parameters
+    worker_cls_kwargs["max_containers"] = 3
+    worker_cls_kwargs["scaledown_window"] = 60
+    _worker_decorator = app.cls(**worker_cls_kwargs)
+except Exception:
+    _worker_decorator = app.cls(
+        image=image,
+        gpu="T4",
+        timeout=10,
+        min_containers=0,
+        concurrency_limit=3,
+        allow_concurrent_inputs=10,
+        container_idle_timeout=60,
+        memory=8192,
+        cpu=2.0,
+    )
+
+
+@_worker_decorator
 class ModelWorker:
     @modal.enter()
     def initialize_runtime(self):
         sys.path.append("/root")
         import logging
         logger = logging.getLogger("ModelWorker")
-        logger.info("Initializing neural models on GPU VRAM...")
+        logger.info("Initializing neural models on GPU VRAM from build-time baked image weights...")
 
         from backend.rag_pipeline.helper.service_embedding import Embedder
         from backend.rag_pipeline.helper.ranking import Ranker

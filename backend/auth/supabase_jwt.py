@@ -5,7 +5,8 @@ Supabase Auth JWKS verification service and FastAPI dependencies.
 Features:
 - Pinned to asymmetric ES256 and RS256 algorithms (strictly rejecting alg=none and HS256).
 - Validates exp, iat, sub, aud='authenticated', iss=<SUPABASE_URL>/auth/v1, and role='authenticated'.
-- Restricts authorization claims exclusively to app_metadata (ignoring user_metadata).
+- Restricts authorisation claims exclusively to app_metadata (ignoring user_metadata).
+- Supports Supabase Anonymous Sign-In JWTs via app_metadata.is_anonymous.
 - 10-minute JWKS caching with rate-limited refresh on unknown kid (at most once every 30s).
 - Session freshness barrier (<15m) for sensitive credential operations.
 """
@@ -36,12 +37,13 @@ http_bearer = HTTPBearer(auto_error=False)
 
 @dataclass(frozen=True, slots=True)
 class DevUserContext:
-    """Authenticated Supabase Developer identity."""
+    """Authenticated Supabase identity (developer or user)."""
     user_id: str
     email: Optional[str]
     role: str
     iat: int
     app_metadata: Dict[str, Any]
+    is_anonymous: bool = False
 
 
 class SupabaseJWKSService:
@@ -68,13 +70,13 @@ class SupabaseJWKSService:
             try:
                 self._jwks_client = PyJWKClient(self.jwks_url, cache_jwk_set=True, lifespan=jwks_cache_ttl)
             except Exception as e:
-                logger.warning(f"[SupabaseJWKSService] Failed to initialize PyJWKClient: {e}")
+                logger.warning(f"[SupabaseJWKSService] Failed to initialise PyJWKClient: {e}")
                 self._jwks_client = None
 
     def get_signing_key_from_jwt(self, token: str):
         """Resolves signing key from token header with rate-limited cache refetch."""
         if not self._jwks_client:
-            raise RuntimeError("JWKS client is not initialized.")
+            raise RuntimeError("JWKS client is not initialised.")
 
         now = time.time()
         try:
@@ -160,13 +162,19 @@ class SupabaseJWKSService:
         # 6. Extract role strictly from app_metadata (never user_metadata)
         app_meta = payload.get("app_metadata", {})
         user_role = app_meta.get("role", "user")
+        is_anon = bool(
+            app_meta.get("is_anonymous", False)
+            or payload.get("is_anonymous", False)
+            or app_meta.get("provider") == "anonymous"
+        )
 
         return DevUserContext(
             user_id=str(payload["sub"]),
             email=payload.get("email"),
             role=user_role,
             iat=iat,
-            app_metadata=app_meta
+            app_metadata=app_meta,
+            is_anonymous=is_anon,
         )
 
 
@@ -194,6 +202,7 @@ async def get_current_dev(
     """
     FastAPI dependency: authenticates developer identity via Supabase JWT.
     Returns DevUserContext or raises uniform 401 HTTPException.
+    Rejects anonymous sign-ins with 403 Forbidden.
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
@@ -205,7 +214,13 @@ async def get_current_dev(
     token = credentials.credentials
     jwks = get_jwks_service()
     try:
-        return jwks.verify_token(token, require_fresh=False)
+        user_ctx = jwks.verify_token(token, require_fresh=False)
+        if user_ctx.is_anonymous:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "forbidden", "message": "Anonymous users cannot access developer resources."}},
+            )
+        return user_ctx
     except ValueError as val_err:
         err_msg = str(val_err)
         err_code = "invalid_token"
@@ -227,6 +242,7 @@ async def get_fresh_current_dev(
     """
     FastAPI dependency: enforces that JWT was issued within the last 15 minutes
     for sensitive state mutations (e.g., API key issuance).
+    Rejects anonymous sign-ins with 403 Forbidden.
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
@@ -238,7 +254,13 @@ async def get_fresh_current_dev(
     token = credentials.credentials
     jwks = get_jwks_service()
     try:
-        return jwks.verify_token(token, require_fresh=True)
+        user_ctx = jwks.verify_token(token, require_fresh=True)
+        if user_ctx.is_anonymous:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "forbidden", "message": "Anonymous users cannot manage developer API keys."}},
+            )
+        return user_ctx
     except ValueError as val_err:
         err_msg = str(val_err)
         err_code = "invalid_token"

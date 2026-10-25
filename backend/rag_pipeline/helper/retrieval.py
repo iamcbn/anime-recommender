@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
 
-    def __init__(self, PARAMS: dict, min_conn: int = 2, max_conn: int = 10):
+    def __init__(self, PARAMS: dict, min_conn: int = 2, max_conn: int = 5):
         self.PARAMS = PARAMS
         self.min_conn = min_conn
         self.max_conn = max_conn

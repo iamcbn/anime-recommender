@@ -57,9 +57,13 @@ export interface ChatMessage {
   isStreaming?: boolean;
   timings?: Record<string, number>;
   timestamp: number;
+  recommendation_id?: string;
+  request_id?: string;
 }
 
 export interface ChatMetadata {
+  recommendation_id?: string;
+  request_id?: string;
   query: string;
   effective_query?: string;
   session_id: string;
@@ -67,6 +71,7 @@ export interface ChatMetadata {
   count: number;
   candidates: AnimeCandidate[];
   avoid_genres?: string[];
+  avoid_tropes?: string[];
   timings?: Record<string, number>;
 }
 
@@ -99,4 +104,11 @@ export interface UserPreferences {
   seen_ids: number[];
   disliked_genres: string[];
   allow_adult: boolean;
+}
+
+export interface FeedbackEvent {
+  recommendation_id: string;
+  event_type: 'thumbs_up' | 'thumbs_down' | 'more_like_this' | 'watchlist_add';
+  anime_id?: number;
+  metadata?: Record<string, unknown>;
 }

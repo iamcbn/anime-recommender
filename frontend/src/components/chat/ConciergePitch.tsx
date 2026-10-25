@@ -29,6 +29,7 @@ export interface ConciergePitchProps {
    * Callback fired when a candidate citation chip is hovered or unhovered.
    */
   onHoverAnime?: (animeId: number | null) => void;
+  plain?: boolean;
 }
 
 /**
@@ -48,7 +49,7 @@ function getCandidateTitle(candidate?: AnimeCandidate, animeId?: number): string
 }
 
 /**
- * Interactive citation chip for [[anime:<id>]] tags.
+ * Interactive citation chip for [anime:<id>] and [[anime:<id>]] tags.
  */
 export const CitationChip: React.FC<{
   animeId: number;
@@ -119,7 +120,7 @@ export const InteractiveSpoiler: React.FC<{
 };
 
 /**
- * Parses markdown inline bold (**text**), structured citation tokens ([[anime:<id>]]),
+ * Parses markdown inline bold (**text**), structured citation tokens ([anime:<id>] or [[anime:<id>]]),
  * scrubbed spoilers ([spoiler redacted]), and piped spoilers (||content||).
  */
 export function renderFormattedInlineText(
@@ -130,15 +131,15 @@ export function renderFormattedInlineText(
   onHoverAnime?: (animeId: number | null) => void
 ): React.ReactNode[] {
   // Regex to split on citations, spoilers, and bold
-  const tokenPattern = /(\[\[anime:\s*\d+\s*\]\]|\[spoiler redacted\]|\|\|[\s\S]+?\|\||\*\*[^*]+\*\*)/gi;
+  const tokenPattern = /(\[{1,2}:?anime:\s*\d+\s*#?\]{1,2}|\[spoiler redacted\]|\|\|[\s\S]+?\|\||\*\*[^*]+\*\*)/gi;
   const parts = text.split(tokenPattern);
 
   return parts.map((part, index) => {
     const key = `${keyPrefix}-part-${index}`;
     if (!part) return null;
 
-    // 1. Citation tag: [[anime:<id>]]
-    const citationMatch = part.match(/^\[\[anime:\s*(\d+)\s*\]\]$/i);
+    // 1. Citation tag: [anime:<id>] or [[anime:<id>]]
+    const citationMatch = part.match(/^\[{1,2}:?anime:\s*(\d+)\s*#?\]{1,2}$/i);
     if (citationMatch) {
       const animeId = parseInt(citationMatch[1], 10);
       const candidate = candidates?.find((c) => c.id === animeId);
@@ -198,6 +199,7 @@ export const ConciergePitch: React.FC<ConciergePitchProps> = ({
   className = '',
   onSelectAnime,
   onHoverAnime,
+  plain = false,
 }) => {
   const content = text ?? pitch ?? '';
 
@@ -211,15 +213,16 @@ export const ConciergePitch: React.FC<ConciergePitchProps> = ({
       const trimmed = block.trim();
       if (!trimmed) return null;
 
-      // Handle bullet lists (* or -)
+      // Handle bullet lists (*, -, •, or numbered 1.)
       const lines = trimmed.split(/\n/);
-      const isList = lines.every((line) => line.trim().startsWith('* ') || line.trim().startsWith('- '));
+      const isListItem = (line: string) => /^\s*([*\-•]|\d+\.)\s+/.test(line);
+      const isList = lines.every((line) => isListItem(line));
 
       if (isList) {
         return (
           <ul key={`block-${blockIndex}`} className="space-y-1 my-2 list-disc list-inside">
             {lines.map((item, lIdx) => {
-              const itemText = item.replace(/^[\*\-]\s+/, '');
+              const itemText = item.replace(/^\s*([*\-•]|\d+\.)\s+/, '');
               return (
                 <li key={`item-${lIdx}`} className="text-slate-700 dark:text-slate-200">
                   {renderFormattedInlineText(
@@ -252,6 +255,20 @@ export const ConciergePitch: React.FC<ConciergePitchProps> = ({
 
   if (!content && !isStreaming) {
     return null;
+  }
+
+  if (plain) {
+    return (
+      <div className={`space-y-2 ${className}`}>
+        {renderedContent}
+        {isStreaming && (
+          <span
+            className="inline-block w-1.5 h-4 ml-1 align-baseline bg-brand animate-pulse rounded-xs"
+            aria-label="cursor"
+          />
+        )}
+      </div>
+    );
   }
 
   return (

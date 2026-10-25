@@ -11,15 +11,17 @@ import type {
 export interface StreamChatParams {
   query: string;
   top_k?: number;
+  offset?: number;
   allow_adult?: boolean;
   seen_ids?: number[];
   disliked_genres?: string[];
   session_id?: string;
   user_id?: string;
+  conversation_history?: Array<{ role: string; content: string }>;
   apiKey?: string;
   signal?: AbortSignal;
   onMetadata?: (data: ChatMetadata) => void;
-  onToken?: (token: string) => void;
+  onToken?: (token: string, animeId?: number) => void;
   onWarning?: (warning: ChatWarning) => void;
   onDone?: (data: ChatDone) => void;
   onError?: (error: ChatError) => void;
@@ -28,11 +30,13 @@ export interface StreamChatParams {
 export async function streamChat({
   query,
   top_k = 5,
+  offset,
   allow_adult = false,
   seen_ids = [],
   disliked_genres = [],
   session_id,
   user_id,
+  conversation_history,
   apiKey,
   signal,
   onMetadata,
@@ -88,6 +92,9 @@ export async function streamChat({
     allow_adult,
   };
 
+  if (offset !== undefined) {
+    payload.offset = offset;
+  }
   if (seen_ids && seen_ids.length > 0) {
     payload.seen_ids = seen_ids;
   }
@@ -99,6 +106,9 @@ export async function streamChat({
   }
   if (user_id) {
     payload.user_id = user_id;
+  }
+  if (conversation_history && conversation_history.length > 0) {
+    payload.conversation_history = conversation_history;
   }
 
   let response: Response;
@@ -187,6 +197,7 @@ export async function streamChat({
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  let hasResolved = false;
 
   try {
     while (true) {
@@ -234,7 +245,12 @@ export async function streamChat({
 
           case 'token':
             if (parsedData && typeof parsedData === 'object' && 'text' in parsedData) {
-              onToken?.(parsedData.text);
+              const animeId = typeof parsedData.anime_id === 'number' ? parsedData.anime_id : undefined;
+              if (animeId !== undefined) {
+                onToken?.(parsedData.text, animeId);
+              } else {
+                onToken?.(parsedData.text);
+              }
             } else if (typeof parsedData === 'string') {
               onToken?.(parsedData);
             }
@@ -247,12 +263,16 @@ export async function streamChat({
             break;
 
           case 'done':
+            hasResolved = true;
             if (parsedData) {
               onDone?.(parsedData as ChatDone);
+            } else {
+              onDone?.({ status: 'completed', session_id: '', timings: {} });
             }
             break;
 
           case 'error':
+            hasResolved = true;
             onError?.({
               status: 400,
               code: parsedData?.category || 'stream_error',
@@ -267,6 +287,7 @@ export async function streamChat({
       }
     }
   } catch (err: any) {
+    hasResolved = true;
     if (err.name === 'AbortError') {
       return;
     }
@@ -276,6 +297,54 @@ export async function streamChat({
       message: err.message || 'Streaming connection interrupted.',
     });
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Reader may already be closed or released
+    }
+    if (!hasResolved && !signal?.aborted) {
+      onDone?.({ status: 'completed', session_id: '', timings: {} });
+    }
+  }
+}
+
+export interface StreamSinglePitchParams {
+  animeId: number;
+  query?: string;
+  signal?: AbortSignal;
+  onToken: (token: string) => void;
+  onDone?: (fullPitch: string) => void;
+  onError?: (err: any) => void;
+}
+
+export async function streamSinglePitch({
+  animeId,
+  query,
+  signal,
+  onToken,
+  onDone,
+  onError,
+}: StreamSinglePitchParams): Promise<void> {
+  let fullPitch = '';
+  try {
+    await streamChat({
+      query: `pitch:${animeId} ${query || ''}`.trim(),
+      signal,
+      onToken: (chunk, tokenAnimeId) => {
+        if (tokenAnimeId !== undefined && tokenAnimeId !== animeId) {
+          return;
+        }
+        fullPitch += chunk;
+        onToken(chunk);
+      },
+      onDone: () => {
+        onDone?.(fullPitch);
+      },
+      onError: (err) => {
+        onError?.(err);
+      },
+    });
+  } catch (err) {
+    onError?.(err);
   }
 }

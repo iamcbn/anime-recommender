@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { streamChat } from './chatStream';
+import { streamChat, streamSinglePitch } from './chatStream';
 
 describe('streamChat SSE Parser and Event Dispatcher', () => {
   const originalFetch = globalThis.fetch;
@@ -186,6 +186,81 @@ describe('streamChat SSE Parser and Event Dispatcher', () => {
         status: 429,
         code: 'rate_limit_exceeded',
         retryAfter: 60,
+      })
+    );
+  });
+
+  it('binds streamed tokens strictly to the requested anime ID in streamSinglePitch', async () => {
+    /**
+     * Verifies that streamSinglePitch filters out token events targeted to other anime IDs
+     * and accumulates matching tokens into the final pitch.
+     */
+    const tokenChunks = [
+      'event: token\ndata: {"anime_id":16049,"text":"A compelling sci-fi "}\n\n',
+      'event: token\ndata: {"anime_id":99999,"text":"Mismatched token from another card"}\n\n',
+      'event: token\ndata: {"anime_id":16049,"text":"set in Academy City."}\n\n',
+      'event: done\ndata: {"status":"completed"}\n\n',
+    ];
+
+    const mockResponse = {
+      ok: true,
+      status: 200,
+      body: createMockStream(tokenChunks),
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+    const onToken = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+
+    await streamSinglePitch({
+      animeId: 16049,
+      query: 'why watch this',
+      onToken,
+      onDone,
+      onError,
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onToken).toHaveBeenCalledTimes(2);
+    expect(onToken).toHaveBeenNthCalledWith(1, 'A compelling sci-fi ');
+    expect(onToken).toHaveBeenNthCalledWith(2, 'set in Academy City.');
+    expect(onDone).toHaveBeenCalledWith('A compelling sci-fi set in Academy City.');
+  });
+
+  it('dispatches fallback onDone when stream completes without an explicit done packet', async () => {
+    /**
+     * Verifies that the try...finally block ensures onDone is dispatched with fallback
+     * metadata so that UI state machines do not hang in a perpetual streaming state.
+     */
+    const tokenChunks = [
+      'event: token\ndata: {"text":"Partial text before socket close"}\n\n',
+    ];
+
+    const mockResponse = {
+      ok: true,
+      status: 200,
+      body: createMockStream(tokenChunks),
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+    const onToken = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+
+    await streamChat({
+      query: 'abruptly closing stream',
+      onToken,
+      onDone,
+      onError,
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onToken).toHaveBeenCalledWith('Partial text before socket close');
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'completed',
       })
     );
   });

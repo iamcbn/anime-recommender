@@ -172,10 +172,10 @@ class DatabaseManager:
                 core.id,
                 core.title_romaji,
                 core.title_english,
-                core.coverImage_large,
-                content.isAdult,
+                core.coverImage_large AS "coverImage_large",
+                content.isAdult AS "isAdult",
                 embed.embedding_text,
-                core.title_userPreferred,
+                core.title_userPreferred AS "title_userPreferred",
                 core.synonyms,
                 content.description,
                 metrics.popularity,
@@ -230,10 +230,10 @@ class DatabaseManager:
                 core.id,
                 core.title_romaji,
                 core.title_english,
-                core.coverImage_large,
-                content.isAdult,
+                core.coverImage_large AS "coverImage_large",
+                content.isAdult AS "isAdult",
                 embed.embedding_text,
-                core.title_userPreferred,
+                core.title_userPreferred AS "title_userPreferred",
                 core.synonyms,
                 content.description,
                 metrics.popularity,
@@ -264,6 +264,45 @@ class DatabaseManager:
             results = cur.fetchall()
 
         return results
+
+    def get_candidate_by_id(self, anime_id: int) -> Optional[dict]:
+        """
+        Retrieves a single anime candidate record by ID from PostgreSQL.
+        Returns a dictionary or None if not found or on database exception.
+        """
+        sql = """
+            SELECT
+                core.id,
+                core.title_romaji,
+                core.title_english,
+                core.coverImage_large AS "coverImage_large",
+                content.isAdult AS "isAdult",
+                core.title_userPreferred AS "title_userPreferred",
+                core.synonyms,
+                content.description,
+                metrics.popularity,
+                content.genres,
+                content.studios,
+                content.tags,
+                metrics.averageScore AS "averageScore",
+                temporal.seasonYear AS "seasonYear",
+                temporal.episodes AS "episodes",
+                temporal.status AS "status"
+            FROM anime_core AS core
+            JOIN anime_content AS content ON core.id = content.id
+            JOIN anime_metrics AS metrics ON core.id = metrics.id
+            LEFT JOIN anime_temporal AS temporal ON core.id = temporal.id
+            WHERE core.id = %s;
+        """
+        try:
+            with self.get_cursor() as cur:
+                cur.execute(sql, (anime_id,))
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+        except Exception as exc:
+            logger.warning(f"[DatabaseManager] Failed to fetch candidate {anime_id} by ID: {exc}")
+        return None
 
     # ----------------------
     # PUTTING THEM TOGETHER

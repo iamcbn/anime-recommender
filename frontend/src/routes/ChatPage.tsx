@@ -8,31 +8,31 @@ import {
   Compass,
   Film,
   Zap,
+  Loader2,
+  User,
 } from 'lucide-react';
-import type { AnimeCandidate, ConversationState } from '../types/chat';
+import type { ChatMessage, ConversationState } from '../types/chat';
 import { useUserPreferences } from '../hooks/useUserPreferences';
 import { streamChat } from '../lib/chatStream';
 import { ChatInput } from '../components/chat/ChatInput';
-import { ConciergePitch } from '../components/chat/ConciergePitch';
 import { AnimeCard } from '../components/chat/AnimeCard';
+import { ConciergePitch } from '../components/chat/ConciergePitch';
 import { PreferenceDrawer } from '../components/chat/PreferenceDrawer';
 import { ErrorBoundary } from '../components/common/ErrorBoundary';
 
 export const ChatPage: React.FC = () => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>('idle');
   const [query, setQuery] = useState('');
   const [activeQuery, setActiveQuery] = useState('');
-  const [candidates, setCandidates] = useState<AnimeCandidate[]>([]);
-  const [pitch, setPitch] = useState('');
-  const [warning, setWarning] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
-  const [highlightedAnimeId, setHighlightedAnimeId] = useState<number | null>(null);
-  const [hoveredAnimeId, setHoveredAnimeId] = useState<number | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const highlightTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const { preferences } = useUserPreferences();
 
   // Rate limit 429 ticking countdown timer
@@ -54,16 +54,37 @@ export const ChatPage: React.FC = () => {
     return () => clearInterval(timer);
   }, [conversationState, rateLimitCountdown]);
 
-  // Clean up ongoing stream & highlight timer on unmount
+  // Clean up ongoing stream on unmount and ensure conversation state resets
   useEffect(() => {
+    setConversationState('idle');
     return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
-      if (highlightTimeoutRef.current) {
-        clearTimeout(highlightTimeoutRef.current as any);
-      }
+      setConversationState('idle');
     };
+  }, []);
+
+  // Smoothly auto-scroll when new conversation turns are added or candidates mount
+  const lastMessage = messages[messages.length - 1];
+  const lastCandidateCount = lastMessage?.candidates?.length ?? 0;
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length, lastCandidateCount]);
+
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setConversationState('idle');
+    setMessages((prev) =>
+      prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m))
+    );
   }, []);
 
   const handleSelectAnime = useCallback((animeId: number) => {
@@ -71,22 +92,6 @@ export const ChatPage: React.FC = () => {
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    setHighlightedAnimeId(animeId);
-    if (highlightTimeoutRef.current) {
-      clearTimeout(highlightTimeoutRef.current as any);
-    }
-    highlightTimeoutRef.current = setTimeout(() => {
-      setHighlightedAnimeId(null);
-      highlightTimeoutRef.current = null;
-    }, 2500);
-  }, []);
-
-  const handleStop = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setConversationState((prev) => (prev === 'streaming' ? 'completed' : prev));
   }, []);
 
   const handleSearch = useCallback(
@@ -104,66 +109,251 @@ export const ChatPage: React.FC = () => {
 
       setConversationState('streaming');
       setActiveQuery(target);
-      setCandidates([]);
-      setPitch('');
-      setWarning(null);
       setErrorMessage(null);
+      setHasMore(true);
+      setIsLoadingMore(false);
+      setQuery('');
 
+      const now = Date.now();
+      const userMsgId = `user-${now}`;
+      const asstMsgId = `asst-${now + 1}`;
+
+      const userMsg: ChatMessage = {
+        id: userMsgId,
+        role: 'user',
+        text: target,
+        timestamp: now,
+      };
+
+      const asstMsg: ChatMessage = {
+        id: asstMsgId,
+        role: 'assistant',
+        text: '',
+        candidates: [],
+        isStreaming: true,
+        timestamp: now + 1,
+      };
+
+      // Append user message and active assistant placeholder to the conversation feed
+      setMessages((prev) => [...prev, userMsg, asstMsg]);
+
+      // Serialise previous conversation turns for LLM context
+      const conversationHistory = messages.map((m) => ({
+        role: m.role,
+        content: m.text || '',
+      }));
+
+      // Gather seen IDs across preferences and already recommended titles
+      const allPriorCandidateIds = messages.flatMap((m) =>
+        (m.candidates || []).map((c) => c.id)
+      );
+      const cumulativeSeen = Array.from(
+        new Set([...preferences.seen_ids, ...allPriorCandidateIds])
+      );
+
+      try {
+        await streamChat({
+          query: target,
+          top_k: 5,
+          allow_adult: preferences.allow_adult,
+          seen_ids: cumulativeSeen,
+          disliked_genres: preferences.disliked_genres,
+          session_id: sessionId,
+          conversation_history: conversationHistory,
+          signal: controller.signal,
+          onMetadata: (metadata) => {
+            const fetched = metadata.candidates || [];
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? {
+                      ...m,
+                      candidates: fetched,
+                      timings: metadata.timings || m.timings,
+                    }
+                  : m
+              )
+            );
+            if (fetched.length < 5) {
+              setHasMore(false);
+            }
+            if (metadata.session_id) {
+              setSessionId(metadata.session_id);
+            }
+          },
+          onToken: (chunk, animeId) => {
+            if (animeId !== undefined) {
+              return;
+            }
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? {
+                      ...m,
+                      text: (m.text || '') + chunk,
+                    }
+                  : m
+              )
+            );
+          },
+          onWarning: (w) => {
+            const warningText = w.detail || w.warning || 'Low retrieval confidence';
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? {
+                      ...m,
+                      warning: warningText,
+                    }
+                  : m
+              )
+            );
+          },
+          onDone: (done) => {
+            setConversationState('completed');
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? {
+                      ...m,
+                      isStreaming: false,
+                      timings: done.timings || m.timings,
+                    }
+                  : m
+              )
+            );
+            if (done.session_id) {
+              setSessionId(done.session_id);
+            }
+          },
+          onError: (err) => {
+            const errorDetail =
+              err.message || err.detail || 'Failed to complete recommendation search.';
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? {
+                      ...m,
+                      isStreaming: false,
+                      error: errorDetail,
+                    }
+                  : m
+              )
+            );
+            if (err.status === 429) {
+              const seconds = err.retryAfter && err.retryAfter > 0 ? err.retryAfter : 60;
+              setConversationState('rate_limited');
+              setRateLimitCountdown(seconds);
+              setErrorMessage(err.message || 'Rate limit reached. Please wait a moment.');
+            } else {
+              setConversationState('error');
+              setErrorMessage(errorDetail);
+            }
+          },
+        });
+      } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+      }
+    },
+    [query, conversationState, rateLimitCountdown, preferences, sessionId, messages]
+  );
+
+  const handleMoreLikeThis = useCallback(
+    (title: string) => {
+      const morePrompt = `More like ${title}`;
+      handleSearch(morePrompt);
+    },
+    [handleSearch]
+  );
+
+  const handleLoadMore = useCallback(async () => {
+    if (isLoadingMore || !hasMore || !activeQuery) return;
+    if (conversationState === 'rate_limited' || rateLimitCountdown > 0) return;
+
+    const latestAsst = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (!latestAsst) return;
+
+    setIsLoadingMore(true);
+
+    const allCandidateIds = messages.flatMap((m) =>
+      (m.candidates || []).map((c) => c.id)
+    );
+    const cumulativeSeen = Array.from(
+      new Set([...preferences.seen_ids, ...allCandidateIds])
+    );
+    const currentOffset = (latestAsst.candidates || []).length;
+
+    let receivedCount = 0;
+
+    try {
       await streamChat({
-        query: target,
+        query: activeQuery,
         top_k: 5,
+        offset: currentOffset,
         allow_adult: preferences.allow_adult,
-        seen_ids: preferences.seen_ids,
+        seen_ids: cumulativeSeen,
         disliked_genres: preferences.disliked_genres,
         session_id: sessionId,
-        signal: controller.signal,
         onMetadata: (metadata) => {
-          setCandidates(metadata.candidates || []);
+          const newCandidates = metadata.candidates || [];
+          receivedCount = newCandidates.length;
+          if (newCandidates.length > 0) {
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id === latestAsst.id) {
+                  const existingIds = new Set((m.candidates || []).map((c) => c.id));
+                  const fresh = newCandidates.filter((c) => !existingIds.has(c.id));
+                  return {
+                    ...m,
+                    candidates: [...(m.candidates || []), ...fresh],
+                  };
+                }
+                return m;
+              })
+            );
+          }
           if (metadata.session_id) {
             setSessionId(metadata.session_id);
           }
         },
-        onToken: (chunk) => {
-          setPitch((prev) => prev + chunk);
-        },
-        onWarning: (w) => {
-          setWarning(w.detail || w.warning || 'Low retrieval confidence');
-        },
         onDone: (done) => {
-          setConversationState('completed');
+          if (receivedCount === 0 || receivedCount < 5) {
+            setHasMore(false);
+          }
           if (done.session_id) {
             setSessionId(done.session_id);
           }
-          abortControllerRef.current = null;
         },
         onError: (err) => {
-          abortControllerRef.current = null;
           if (err.status === 429) {
             const seconds = err.retryAfter && err.retryAfter > 0 ? err.retryAfter : 60;
             setConversationState('rate_limited');
             setRateLimitCountdown(seconds);
             setErrorMessage(err.message || 'Rate limit reached. Please wait a moment.');
           } else {
-            setConversationState('error');
-            setErrorMessage(err.message || err.detail || 'Failed to complete recommendation search.');
+            setErrorMessage(err.message || err.detail || 'Failed to load additional recommendations.');
           }
         },
       });
-    },
-    [query, conversationState, rateLimitCountdown, preferences, sessionId]
-  );
-
-  const handleMoreLikeThis = useCallback(
-    (title: string) => {
-      const morePrompt = `More like ${title}`;
-      setQuery(morePrompt);
-      handleSearch(morePrompt);
-    },
-    [handleSearch]
-  );
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [
+    isLoadingMore,
+    hasMore,
+    activeQuery,
+    conversationState,
+    rateLimitCountdown,
+    messages,
+    preferences,
+    sessionId,
+  ]);
 
   const isStreaming = conversationState === 'streaming';
   const isRateLimited = conversationState === 'rate_limited' || rateLimitCountdown > 0;
+  const latestAssistantIndex = messages.map((m) => m.role).lastIndexOf('assistant');
 
   return (
     <div className="min-h-[calc(100vh-3.5rem)] bg-slate-50/50 dark:bg-dark-950 py-8 px-4 sm:px-6 lg:px-8">
@@ -174,11 +364,11 @@ export const ChatPage: React.FC = () => {
             <Sparkles className="w-3.5 h-3.5" />
             <span>AI Conversational Discovery</span>
           </div>
-          <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 dark:white tracking-tight">
+          <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">
             Find Your Next Anime Obsession
           </h1>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-400 max-w-xl mx-auto leading-relaxed">
-            Describe a mood, character archetype, or complex trope. Our neural concierge matches and pitches personalized titles in real time.
+            Describe a mood, character archetype, or complex trope. Our neural concierge matches and pitches personalised titles in real time.
           </p>
         </div>
 
@@ -226,21 +416,8 @@ export const ChatPage: React.FC = () => {
           </div>
         )}
 
-        {/* Low Confidence Warning Banner */}
-        {warning && (
-          <div
-            role="status"
-            className="rounded-xl p-3.5 border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 flex items-start gap-2.5 text-xs sm:text-sm"
-          >
-            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-0.5">
-              <span className="font-semibold">Retrieval Notice:</span> {warning}
-            </div>
-          </div>
-        )}
-
-        {/* Generic Error Banner */}
-        {conversationState === 'error' && errorMessage && !isRateLimited && (
+        {/* Generic Top-level Error Banner when no conversation turns exist */}
+        {conversationState === 'error' && errorMessage && !isRateLimited && messages.length === 0 && (
           <div
             role="alert"
             className="rounded-xl p-4 border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 text-red-900 dark:text-red-200 flex items-start gap-3"
@@ -255,59 +432,148 @@ export const ChatPage: React.FC = () => {
           </div>
         )}
 
-        {/* Concierge Pitch Presentation Bubble */}
-        {(pitch || isStreaming) && (
-          <div className="pt-1">
-            <ConciergePitch
-              pitch={pitch}
-              text={pitch}
-              candidates={candidates}
-              isStreaming={isStreaming}
-              onSelectAnime={handleSelectAnime}
-              onHoverAnime={(id) => setHoveredAnimeId(id)}
-            />
+        {/* Conversational Message Feed */}
+        {messages.length > 0 && (
+          <div className="space-y-6 pt-2 pb-6" role="log" aria-label="Conversation Feed">
+            {messages.map((message, index) => {
+              const isLatestAssistant = index === latestAssistantIndex;
+
+              if (message.role === 'user') {
+                return (
+                  <div
+                    key={message.id}
+                    className="flex justify-end items-start gap-3"
+                  >
+                    <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-xs px-4 py-3 bg-brand text-white shadow-xs">
+                      <p className="text-sm sm:text-base leading-relaxed whitespace-pre-wrap font-medium">
+                        {message.text}
+                      </p>
+                    </div>
+                    <div
+                      className="w-8 h-8 rounded-full bg-brand/10 dark:bg-brand/20 text-brand dark:text-brand-light border border-brand/20 flex items-center justify-center shrink-0 shadow-xs mt-1"
+                      aria-label="User"
+                    >
+                      <User className="w-4 h-4" />
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div key={message.id} className="flex items-start gap-3">
+                  <div
+                    className="w-8 h-8 rounded-full bg-brand/10 dark:bg-brand/20 text-brand dark:text-brand-light border border-brand/20 flex items-center justify-center shrink-0 shadow-xs mt-1"
+                    aria-label="AI Concierge"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 space-y-4 min-w-0">
+                    {/* Low Confidence Notice */}
+                    {message.warning && (
+                      <div
+                        role="status"
+                        className="rounded-xl p-3.5 border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 flex items-start gap-2.5 text-xs sm:text-sm"
+                      >
+                        <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                          <span className="font-semibold">Retrieval Notice:</span> {message.warning}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Turn Error Notice */}
+                    {message.error && (
+                      <div
+                        role="alert"
+                        className="rounded-xl p-3.5 border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 text-red-900 dark:text-red-200 flex items-start gap-2.5 text-xs sm:text-sm"
+                      >
+                        <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                          <span className="font-semibold">Generation Notice:</span> {message.error}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Conversational Text Response Bubble */}
+                    {Boolean(message.text && message.text.trim()) && (
+                      <div className="rounded-2xl rounded-tl-xs px-4 py-3 bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-800 text-slate-800 dark:text-slate-200 text-sm sm:text-base leading-relaxed shadow-xs">
+                        <ConciergePitch
+                          plain
+                          text={message.text}
+                          candidates={message.candidates}
+                          isStreaming={message.isStreaming}
+                          onSelectAnime={handleSelectAnime}
+                        />
+                      </div>
+                    )}
+
+                    {/* Neural Search Progress Indicator */}
+                    {message.isStreaming &&
+                      (!message.candidates || message.candidates.length === 0) && (
+                        <div className="flex items-center gap-2 text-xs sm:text-sm text-brand font-medium p-4 bg-white dark:bg-dark-900 rounded-2xl border border-slate-200 dark:border-dark-800 shadow-xs">
+                          <Loader2 className="w-4 h-4 animate-spin text-brand shrink-0" />
+                          <span>Searching neural index and preparing personalized recommendations...</span>
+                        </div>
+                      )}
+
+                    {/* Anime Discovery Cards Section */}
+                    {message.candidates && message.candidates.length > 0 && (
+                      <ErrorBoundary resetKeys={[message.candidates]}>
+                        <div className="space-y-4 pt-1">
+                          <div className="flex items-center justify-between px-1">
+                            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                              <Film className="w-4 h-4 text-brand" />
+                              <span>Recommended Candidates ({message.candidates.length})</span>
+                            </h2>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-4">
+                            {message.candidates.map((anime) => (
+                              <AnimeCard
+                                key={anime.id}
+                                anime={anime}
+                                query={activeQuery}
+                                onMoreLikeThis={handleMoreLikeThis}
+                              />
+                            ))}
+                          </div>
+
+                          {/* Offset-based Load More Recommendations Button (Latest assistant turn only) */}
+                          {isLatestAssistant && hasMore && (
+                            <div className="flex justify-center pt-2 pb-2">
+                              <button
+                                type="button"
+                                onClick={handleLoadMore}
+                                disabled={isLoadingMore || isStreaming}
+                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm text-slate-700 dark:text-slate-200 bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-800 shadow-xs hover:bg-slate-50 dark:hover:bg-dark-800 hover:border-slate-300 dark:hover:border-dark-700 transition-all focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none"
+                              >
+                                {isLoadingMore ? (
+                                  <>
+                                    <Loader2 className="w-4 h-4 animate-spin text-brand" />
+                                    <span>Loading more recommendations...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="w-4 h-4 text-brand" />
+                                    <span>Load More Recommendations</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </ErrorBoundary>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={messagesEndRef} />
           </div>
         )}
 
-        {/* Anime Discovery Cards Section */}
-        {candidates.length > 0 && (
-          <ErrorBoundary resetKeys={[candidates]}>
-            <div className="space-y-4 pt-2">
-              <div className="flex items-center justify-between px-1">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                  <Film className="w-4 h-4 text-brand" />
-                  <span>Recommended Candidates ({candidates.length})</span>
-                  {activeQuery && (
-                    <span className="font-normal normal-case text-slate-400 truncate max-w-xs">
-                      for &ldquo;{activeQuery}&rdquo;
-                    </span>
-                  )}
-                </h2>
-                {isStreaming && (
-                  <div className="flex items-center gap-1.5 text-xs text-brand font-medium">
-                    <span className="inline-block w-2 h-2 rounded-full bg-brand animate-ping" />
-                    <span>Streaming commentary...</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Candidate Card Grid (<1.5s TTFT Mount) */}
-              <div className="grid grid-cols-1 gap-4">
-                {candidates.map((anime) => (
-                  <AnimeCard
-                    key={anime.id}
-                    anime={anime}
-                    onMoreLikeThis={handleMoreLikeThis}
-                    isHighlighted={highlightedAnimeId === anime.id || hoveredAnimeId === anime.id}
-                  />
-                ))}
-              </div>
-            </div>
-          </ErrorBoundary>
-        )}
-
-        {/* Empty State / Welcome Guide when Idle and No Candidates */}
-        {conversationState === 'idle' && candidates.length === 0 && (
+        {/* Empty State / Welcome Guide when Idle and No Messages */}
+        {messages.length === 0 && (
           <div className="p-8 sm:p-12 text-center rounded-2xl border border-dashed border-slate-300 dark:border-dark-800 bg-white/50 dark:bg-dark-900/30 space-y-6">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-brand/10 dark:bg-brand/20 text-brand flex items-center justify-center shadow-xs">
               <Compass className="w-7 h-7" />

@@ -238,3 +238,83 @@ class TestLowConfidenceStreaming:
                 assert "Low retrieval confidence" in body
                 assert "event: metadata" in body
                 assert "event: done" in body
+
+class TestPitchCostBypassAndOffsetPaging:
+    """Verifies $0 cost bypass on initial search and offset-based candidate paging."""
+
+    def test_synthesizer_has_generate_pitch_stream_alias(self):
+        """Verifies method alias generate_pitch_stream exists on RecommendationSynthesizer."""
+        assert hasattr(RecommendationSynthesizer, "generate_pitch_stream")
+        assert RecommendationSynthesizer.generate_pitch_stream is RecommendationSynthesizer.stream_pitch
+
+    @pytest.mark.asyncio
+    async def test_initial_search_bypasses_streaming_pitch_when_unmocked(self, sample_candidates):
+        """Initial search without conversation history bypasses streaming pitch ($0 spent)."""
+        async def mock_retrieval(query, top_k=5, allow_adult=False, seen_ids=None, include_metadata=True, request_id=None):
+            return sample_candidates[:top_k], {"retrieval_ms": 10.0}
+
+        orch = PipelineOrchestrator(
+            retrieval_func=mock_retrieval,
+        )
+
+        chunks = []
+        async for sse in orch.stream_chat(query="cyberpunk action", offset=0):
+            chunks.append(sse)
+
+        full_output = "".join(chunks)
+        assert "event: metadata" in full_output
+        assert "event: done" in full_output
+        assert "event: token" not in full_output
+        assert '"tokens_emitted": 0' in full_output
+
+    @pytest.mark.asyncio
+    async def test_offset_greater_than_zero_bypasses_streaming_pitch(self, sample_candidates):
+        """Paging requests with offset > 0 bypass pitch synthesis unconditionally."""
+        async def mock_retrieval(query, top_k=5, allow_adult=False, seen_ids=None, include_metadata=True, request_id=None):
+            return sample_candidates, {"retrieval_ms": 10.0}
+
+        orch = PipelineOrchestrator(
+            retrieval_func=mock_retrieval,
+        )
+
+        chunks = []
+        async for sse in orch.stream_chat(query="cyberpunk action", offset=5, top_k=2):
+            chunks.append(sse)
+
+        full_output = "".join(chunks)
+        assert "event: metadata" in full_output
+        assert "event: done" in full_output
+        assert "event: token" not in full_output
+
+    @pytest.mark.asyncio
+    async def test_offset_paging_retrieves_expanded_pool_and_slices_candidates(self, sample_candidates):
+        """Pool increases to max(top_k + offset, 50) and slices surviving candidates."""
+        captured_top_k = []
+
+        large_candidate_pool = [
+            {"id": i, "title_userPreferred": f"Anime #{i}", "cross_encoder_score": 10.0 - i * 0.1}
+            for i in range(1, 61)
+        ]
+
+        async def mock_retrieval(query, top_k=5, allow_adult=False, seen_ids=None, include_metadata=True, request_id=None):
+            captured_top_k.append(top_k)
+            return large_candidate_pool[:top_k], {"retrieval_ms": 10.0}
+
+        orch = PipelineOrchestrator(
+            retrieval_func=mock_retrieval,
+        )
+
+        chunks = []
+        async for sse in orch.stream_chat(query="cyberpunk action", top_k=5, offset=10):
+            chunks.append(sse)
+
+        assert captured_top_k[0] == 50
+
+        metadata_chunk = next(c for c in chunks if "event: metadata" in c)
+        match = re.search(r'data:\s*(\{.*\})', metadata_chunk)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        assert payload["count"] == 5
+        candidate_ids = [c["id"] for c in payload["candidates"]]
+        assert candidate_ids == [11, 12, 13, 14, 15]
+

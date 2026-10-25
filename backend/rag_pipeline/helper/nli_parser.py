@@ -41,7 +41,7 @@ DEFAULT_NLI_MODEL = "gpt-5.4-mini"
 
 # Regex cues for conversational references and negative constraints
 CONVERSATIONAL_CUES_REGEX = re.compile(
-    r"\b(more|less|similar|another|instead|not|without|exclude|too|also|earlier|previous|like that|that one|first one|second one)\b",
+    r"\b(more|less|similar|another|instead|not|without|exclude|too|also|earlier|previous|like that|that one|first one|second one|show me|give me|next)\b",
     re.IGNORECASE,
 )
 
@@ -54,7 +54,7 @@ class NLIOutput(BaseModel):
     standalone_query: str = Field(description="Self-contained anime search query resolving pronouns and references")
     avoid_genres: List[str] = Field(default_factory=list, description="List of genres to explicitly exclude")
     avoid_tropes: List[str] = Field(default_factory=list, description="List of plot tropes, themes, or elements to avoid")
-    intent: Literal["new_search", "refine", "exclude_title", "more_like"] = Field(
+    intent: Literal["new_search", "refine", "exclude_title", "more_like", "queue_more", "paginate"] = Field(
         default="refine",
         description="Conversational intent classification"
     )
@@ -69,7 +69,7 @@ def should_bypass_nli(query: str, history: Optional[List[dict]]) -> bool:
     Cost safeguard: Skip NLI parsing if conversational resolution is unnecessary ($0 spent).
     - If history is empty or None: return True (turn 1 bypass: $0 spent).
     - If query does not contain conversational reference indicators (e.g. regex for cues like
-      \b(more|less|similar|another|instead|not|without|exclude|too|also|earlier|previous|like that|that one|first one|second one)\b),
+      \b(more|less|similar|another|instead|not|without|exclude|too|also|earlier|previous|like that|that one|first one|second one|show me|give me|next)\b),
       and is a long standalone prompt: return True (bypass: $0 spent).
     - Otherwise return False (run NLI parsing).
     """
@@ -111,10 +111,12 @@ class NLIParser:
         "1. `standalone_query`: Provide a self-contained anime search query that incorporates core "
         "themes, genres, or premises from context, resolving pronouns like 'it', 'that', 'them', or relative "
         "references like 'similar to the first one' or 'less gory'.\n"
+        "   - When user asks for more (e.g. 'show me 5 more', 'next 5', 'give me more'), set intent='queue_more' and preserve the previous search theme as standalone_query.\n"
+        "   - When user asks for 'more like the second one', resolve the title/ID from context, set intent='more_like'.\n"
         "2. `avoid_genres`: List explicit genres to exclude (e.g. 'less gory' -> ['Horror', 'Gore'], "
-        "'no mecha' -> ['Mecha'], 'without romance' -> ['Romance']). Capitalize standard genre names.\n"
-        "3. `avoid_tropes`: List plot tropes, narrative elements, or themes to avoid (e.g. ['harem', 'ecchi', 'isekai', 'overpowered MC']).\n"
-        "4. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', or 'more_like'."
+        "'no mecha' -> ['Mecha'], 'without romance' -> ['Romance'], 'less violent' -> ['Action', 'Horror', 'Gore']). Capitalize standard genre names.\n"
+        "3. `avoid_tropes`: List plot tropes, narrative elements, or themes to avoid (e.g. ['harem', 'ecchi', 'isekai', 'overpowered MC', 'violence', 'gore']).\n"
+        "4. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', or 'paginate'."
     )
 
     def __init__(

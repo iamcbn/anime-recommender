@@ -85,6 +85,23 @@ def filter_candidates_by_negative_constraints(
 
         filtered.append(candidate)
 
+    if not filtered and candidates:
+        softened = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                softened.append(candidate)
+                continue
+            cand_copy = dict(candidate)
+            genres = _extract_tokens(cand_copy.get("genres"))
+            tags = _extract_tokens(cand_copy.get("tags"))
+            matched_genres = genres.intersection(norm_avoid_genres)
+            matched_tropes = tags.intersection(norm_avoid_tropes)
+            all_excluded = sorted(list(matched_genres | matched_tropes))
+            tag_str = ", ".join(t.capitalize() for t in all_excluded) if all_excluded else "Excluded tag"
+            cand_copy["exclusion_badge"] = f"Excluded tag present: [{tag_str}]"
+            softened.append(cand_copy)
+        return softened
+
     return filtered
 
 
@@ -183,7 +200,30 @@ class Ranker:
                 if anime_id not in rrf_scores:
                     rrf_scores[anime_id] = 0.0
                     if hasattr(row, "keys"):
-                        row_dict = {c: row[c] for c in col if c in row}
+                        lower_row = {
+                            str(k).lower(): v
+                            for k, v in (row.items() if hasattr(row, "items") else ((k, row[k]) for k in row.keys()))
+                        }
+                        row_dict = {c: lower_row[c.lower()] for c in col if c.lower() in lower_row}
+
+                        # Fallback mappings for case-folded or renamed metadata keys
+                        if not row_dict.get('coverImage_large'):
+                            row_dict['coverImage_large'] = (
+                                lower_row.get('coverimage_large')
+                                or lower_row.get('coverimage')
+                                or lower_row.get('cover_image_large')
+                                or lower_row.get('cover_image')
+                                or lower_row.get('image')
+                            )
+                        if not row_dict.get('title_userPreferred'):
+                            row_dict['title_userPreferred'] = (
+                                lower_row.get('title_userpreferred')
+                                or lower_row.get('title_romaji')
+                                or lower_row.get('title_english')
+                                or lower_row.get('title')
+                            )
+                        if row_dict.get('isAdult') is None and 'isadult' in lower_row:
+                            row_dict['isAdult'] = lower_row['isadult']
                     elif len(row) == len(col):
                         row_dict = dict(zip(col, row))
                     elif len(row) == 11:
@@ -303,6 +343,7 @@ class Ranker:
     def pick_title(self, row) -> str:
         for col in [
             "title_userPreferred",
+            "title_userpreferred",
             "title_romaji",
             "title_english"
         ]:
@@ -321,6 +362,18 @@ class Ranker:
             return []
 
         df = df.copy()
+
+        # Normalise case-folded column names to canonical schema
+        rename_map = {
+            'coverimage_large': 'coverImage_large',
+            'title_userpreferred': 'title_userPreferred',
+            'averagescore': 'averageScore',
+            'seasonyear': 'seasonYear',
+            'isadult': 'isAdult',
+        }
+        for folded, canonical in rename_map.items():
+            if canonical not in df.columns and folded in df.columns:
+                df[canonical] = df[folded]
         base_cols = [
             'id', 'title_romaji', 'title_userPreferred', 'title_english',
             'coverImage_large', 'cross_encoder_score', 'final_rrf_score', 'retrieval_rrf_score'
@@ -329,7 +382,8 @@ class Ranker:
         if include_metadata:
             meta_cols = [
                 'description', 'genres', 'studios', 'tags',
-                'averageScore', 'seasonYear', 'episodes', 'status'
+                'averageScore', 'seasonYear', 'episodes', 'status',
+                'exclusion_badge'
             ]
             for col_name in meta_cols:
                 if col_name in df.columns:
@@ -338,7 +392,7 @@ class Ranker:
         target_cols = [c for c in base_cols if c in df.columns]
         df = df[target_cols]
 
-        # Convert NaNs to None for valid JSON serialization
+        # Convert NaNs to None for valid JSON serialisation
         records = df.where(pd.notnull(df), None).to_dict(orient="records")
         return records
 
@@ -472,6 +526,18 @@ r"""
     
     def _attach_franchise_key(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+
+        # Normalise case-folded column names to canonical schema
+        rename_map = {
+            'coverimage_large': 'coverImage_large',
+            'title_userpreferred': 'title_userPreferred',
+            'averagescore': 'averageScore',
+            'seasonyear': 'seasonYear',
+            'isadult': 'isAdult',
+        }
+        for folded, canonical in rename_map.items():
+            if canonical not in df.columns and folded in df.columns:
+                df[canonical] = df[folded]
 
         df["canonical_title"] = df.apply(self.pick_title, axis=1)
         df["franchise_key"] = df["canonical_title"].apply(self.normalise_franchise)

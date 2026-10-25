@@ -153,4 +153,66 @@ describe('ConciergePitch component', () => {
     expect(screen.getByText(/streaming ai commentary/i)).toBeInTheDocument();
     expect(screen.getByLabelText('cursor')).toBeInTheDocument();
   });
+
+  it('parses both single-bracket and double-bracket citation chips', () => {
+    /**
+     * Verifies that both [anime:<id>] and [[anime:<id>]] formats are correctly parsed.
+     */
+    const pitchText =
+      'Single citation [anime:5114] and double citation [[anime:9253]].';
+
+    render(<ConciergePitch text={pitchText} candidates={sampleCandidates} />);
+
+    expect(screen.getByRole('button', { name: /fullmetal alchemist: brotherhood/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /steins;gate/i })).toBeInTheDocument();
+  });
+
+  it('parses extended citation tags with leading colons and trailing hashes', () => {
+    /**
+     * Verifies that tags with leading colon and trailing hash ([:anime:5114#]) are parsed cleanly.
+     */
+    const pitchText =
+      'Check out [:anime:5114#] for dark fantasy and [anime:9253#] for time travel.';
+
+    render(<ConciergePitch text={pitchText} candidates={sampleCandidates} />);
+
+    expect(screen.getByRole('button', { name: /fullmetal alchemist: brotherhood/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /steins;gate/i })).toBeInTheDocument();
+  });
+
+  it('renders in plain mode without outer concierge card container and header', () => {
+    /**
+     * Verifies that plain=true suppresses the Taste Concierge Pitch header.
+     */
+    const pitchText = 'Embedded card rationale with **bold** text.';
+
+    render(<ConciergePitch plain text={pitchText} />);
+
+    expect(screen.getByText('Embedded card rationale with')).toBeInTheDocument();
+    expect(screen.getByText('bold')).toBeInTheDocument();
+    expect(screen.queryByText('Taste Concierge Pitch')).not.toBeInTheDocument();
+  });
+
+  it('renders bullet lists using unicode bullets and numbered prefixes', () => {
+    /**
+     * Verifies that unicode bullets (•) and numbered items (1., 2.) are recognised as lists.
+     */
+    const bulletText =
+      'Unicode list:\n\n' +
+      '• First item\n' +
+      '• Second item\n\n' +
+      'Numbered list:\n\n' +
+      '1. Numbered one\n' +
+      '2. Numbered two';
+
+    render(<ConciergePitch text={bulletText} />);
+
+    expect(screen.getByText('First item')).toBeInTheDocument();
+    expect(screen.getByText('Second item')).toBeInTheDocument();
+    expect(screen.getByText('Numbered one')).toBeInTheDocument();
+    expect(screen.getByText('Numbered two')).toBeInTheDocument();
+
+    const lists = screen.getAllByRole('list');
+    expect(lists.length).toBe(2);
+  });
 });

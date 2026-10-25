@@ -43,5 +43,8 @@ AGENTS.md
 scripts/check_hygiene.py
 
 
+# Media & Screen recordings
+*.mp4
+
 # Generated test reports
 test/reports/

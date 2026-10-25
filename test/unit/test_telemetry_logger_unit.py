@@ -232,3 +232,31 @@ def test_endpoint_and_source_normalization():
     assert _normalize_source("user", "recommend") == "user"
     assert _normalize_source(None, "admin_recommend") == "admin_eval"
     assert _normalize_source(None, "chat") == "user"
+
+
+@pytest.mark.unit
+def test_decimal_and_float_integer_sanitisation():
+    """
+    Verifies that sanitize_for_json correctly converts Decimal instances and
+    floating point numbers with integer values into Python ints, while preserving
+    fractional values and converting NaN/Inf Decimals to None.
+    """
+    from decimal import Decimal
+
+    assert sanitize_for_json(Decimal("42.0")) == 42
+    assert isinstance(sanitize_for_json(Decimal("42.0")), int)
+
+    assert sanitize_for_json(Decimal("42.5")) == 42.5
+    assert isinstance(sanitize_for_json(Decimal("42.5")), float)
+
+    assert sanitize_for_json(Decimal("NaN")) is None
+    assert sanitize_for_json(Decimal("Infinity")) is None
+    assert sanitize_for_json(Decimal("-Infinity")) is None
+
+    # Floats with whole number values converted to int
+    assert sanitize_for_json(100.0) == 100
+    assert isinstance(sanitize_for_json(100.0), int)
+
+    # Floats with fractional values preserved as float
+    assert sanitize_for_json(100.75) == 100.75
+    assert isinstance(sanitize_for_json(100.75), float)

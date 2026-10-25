@@ -256,6 +256,7 @@ class RecommendationSynthesizer:
         """Extracts the best human-readable title from candidate fields."""
         return (
             candidate.get("title_userPreferred")
+            or candidate.get("title_userpreferred")
             or candidate.get("title_english")
             or candidate.get("title_romaji")
             or f"Anime #{candidate.get('id', 'Unknown')}"
@@ -412,6 +413,231 @@ class RecommendationSynthesizer:
             "Explore the candidate cards above for full episode counts, visual art, and detailed metrics."
         )
         return "\n".join(lines)
+
+    def generate_single_fallback_pitch(
+        self,
+        query: str,
+        candidate: dict,
+    ) -> str:
+        """Deterministic, grounded single-title fallback rationale."""
+        if not candidate:
+            return "Recommended title based on catalog relevance."
+        title = self._extract_title(candidate)
+        cid = candidate.get("id")
+        tag_str = f"[[anime:{cid}]] " if cid is not None else ""
+        score = candidate.get("averageScore")
+        score_str = f"with a {score}% score" if score is not None else ""
+        genres = candidate.get("genres")
+        genres_str = ""
+        if isinstance(genres, list) and genres:
+            genres_str = f"featuring {', '.join(str(g) for g in genres[:3])}"
+        elif isinstance(genres, str) and genres:
+            genres_str = f"featuring {genres}"
+        desc = sanitize_html(candidate.get("description") or candidate.get("synopsis") or "")
+        snippet = (desc[:160] + "...") if len(desc) > 160 else desc
+        meta_parts = [p for p in [score_str, genres_str] if p]
+        meta_summary = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        if snippet:
+            return f"{tag_str}**{title}**{meta_summary} matches your preference: {snippet}"
+        return f"{tag_str}**{title}**{meta_summary} is recommended for your request."
+
+    async def synthesize_single_pitch(
+        self,
+        query: str,
+        candidate: dict,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Generates a targeted, concise single-title micro-pitch (<80 completion tokens)."""
+        if not candidate:
+            return "No anime candidate was provided to generate a rationale."
+        if await budget_guard.is_budget_exceeded("presentation") or self.async_client is None:
+            return self.generate_single_fallback_pitch(query, candidate)
+        title = self._extract_title(candidate)
+        cid = candidate.get("id")
+        score = candidate.get("averageScore")
+        score_str = f"{score}/100" if score is not None else "N/A"
+        genres = candidate.get("genres")
+        genres_str = ", ".join(str(g) for g in genres) if isinstance(genres, list) else (str(genres) if genres else "N/A")
+        studios = candidate.get("studios")
+        studios_str = ", ".join(str(s) for s in studios) if isinstance(studios, list) else (str(studios) if studios else "N/A")
+        desc = sanitize_html(candidate.get("description") or candidate.get("synopsis") or "")
+        if len(desc) > 300:
+            desc = desc[:297] + "..."
+        system_prompt = (
+            "You are an elite anime taste concierge.\n"
+            "Your mission is to craft a targeted, concise single-title pitch explaining specifically "
+            "why this anime matches the user's request.\n\n"
+            "STRICT GROUNDING & BREVITY CONSTRAINTS:\n"
+            "1. Rely SOLELY on the provided anime metadata (title, synopsis, genres, studios, average score).\n"
+            "2. Do NOT invent plot points, characters, or lore not present in the synopsis.\n"
+            "3. NEVER reveal major spoilers, endings, or character deaths.\n"
+            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<80 tokens).\n"
+            "5. Cite the title as [[anime:<id>]] tag."
+        )
+        user_content = (
+            f"User Query: \"{query}\"\n"
+            f"Candidate Anime Metadata:\n"
+            f"• Title: {title} [ID: {cid}]\n"
+            f"• Average Score: {score_str}\n"
+            f"• Studios: {studios_str}\n"
+            f"• Genres: {genres_str}\n"
+            f"Synopsis: {desc if desc else 'No synopsis available.'}\n\n"
+            "Provide a concise personalized pitch explaining why this specific anime fits the user query."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        t0 = time.perf_counter()
+        try:
+            response = await asyncio.wait_for(
+                self.async_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=80,
+                ),
+                timeout=self.timeout,
+            )
+            pitch_text = response.choices[0].message.content.strip() if response.choices and response.choices[0].message.content else ""
+            usage_obj = getattr(response, "usage", None)
+            prompt_tokens = _safe_token_count(getattr(usage_obj, "prompt_tokens", 0) or 0)
+            completion_tokens = _safe_token_count(getattr(usage_obj, "completion_tokens", 0) or 0)
+            total_tokens = _safe_token_count(getattr(usage_obj, "total_tokens", None), default=prompt_tokens + completion_tokens)
+            try:
+                log_llm_usage_event(
+                    layer="presentation",
+                    model=self.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached=False,
+                    latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+                    status="ok",
+                    request_id=request_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
+            if total_tokens > 0:
+                try:
+                    await budget_guard.record_usage("presentation", total_tokens)
+                except Exception:
+                    pass
+            if not pitch_text:
+                return self.generate_single_fallback_pitch(query, candidate)
+            scrubbed = self.scrub_spoilers(pitch_text)
+            valid_ids = {cid} if cid is not None else set()
+            sanitised = validate_and_sanitize_citations(scrubbed, valid_ids)
+            return sanitised or scrubbed
+        except Exception as exc:
+            logger.warning(f"[RecommendationSynthesizer] Single pitch failed: {exc}. Serving fallback.")
+            return self.generate_single_fallback_pitch(query, candidate)
+
+    async def stream_single_pitch(
+        self,
+        query: str,
+        candidate: dict,
+        is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ):
+        """Asynchronously streams targeted single-title pitch rationale token-by-token."""
+        if not candidate:
+            yield "No candidate provided."
+            return
+        if await budget_guard.is_budget_exceeded("presentation") or self.async_client is None:
+            fallback = self.generate_single_fallback_pitch(query, candidate)
+            words = fallback.split(" ")
+            for i, word in enumerate(words):
+                if is_disconnected and await is_disconnected():
+                    return
+                yield word + (" " if i < len(words) - 1 else "")
+                await asyncio.sleep(0.01)
+            return
+        title = self._extract_title(candidate)
+        cid = candidate.get("id")
+        score = candidate.get("averageScore")
+        score_str = f"{score}/100" if score is not None else "N/A"
+        genres = candidate.get("genres")
+        genres_str = ", ".join(str(g) for g in genres) if isinstance(genres, list) else (str(genres) if genres else "N/A")
+        studios = candidate.get("studios")
+        studios_str = ", ".join(str(s) for s in studios) if isinstance(studios, list) else (str(studios) if studios else "N/A")
+        desc = sanitize_html(candidate.get("description") or candidate.get("synopsis") or "")
+        if len(desc) > 300:
+            desc = desc[:297] + "..."
+        system_prompt = (
+            "You are an elite anime taste concierge.\n"
+            "Your mission is to craft a targeted, concise single-title pitch explaining specifically "
+            "why this anime matches the user's request.\n\n"
+            "STRICT GROUNDING & BREVITY CONSTRAINTS:\n"
+            "1. Rely SOLELY on the provided anime metadata (title, synopsis, genres, studios, average score).\n"
+            "2. Do NOT invent plot points, characters, or lore not present in the synopsis.\n"
+            "3. NEVER reveal major spoilers, endings, or character deaths.\n"
+            "4. FORMAT: Keep it to 1 to 2 punchy, cinematic sentences (<80 tokens).\n"
+            "5. Cite the title as [[anime:<id>]] tag."
+        )
+        user_content = (
+            f"User Query: \"{query}\"\n"
+            f"Candidate Anime Metadata:\n"
+            f"• Title: {title} [ID: {cid}]\n"
+            f"• Average Score: {score_str}\n"
+            f"• Studios: {studios_str}\n"
+            f"• Genres: {genres_str}\n"
+            f"Synopsis: {desc if desc else 'No synopsis available.'}\n\n"
+            "Provide a concise personalized pitch explaining why this specific anime fits the user query."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        t0 = time.perf_counter()
+        accumulated_tokens = []
+        try:
+            stream_resp = await asyncio.wait_for(
+                self.async_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=80,
+                    stream=True,
+                ),
+                timeout=self.timeout,
+            )
+            async for chunk in stream_resp:
+                if is_disconnected and await is_disconnected():
+                    return
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    tok = chunk.choices[0].delta.content
+                    scrubbed = self.scrub_spoilers(tok)
+                    accumulated_tokens.append(scrubbed)
+                    yield scrubbed
+            total_tokens = len("".join(accumulated_tokens).split()) * 2
+            try:
+                log_llm_usage_event(
+                    layer="presentation",
+                    model=self.model,
+                    prompt_tokens=40,
+                    completion_tokens=len(accumulated_tokens),
+                    total_tokens=total_tokens,
+                    cached=False,
+                    latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+                    status="ok",
+                    request_id=request_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning(f"[RecommendationSynthesizer] Single pitch streaming failed: {exc}. Yielding fallback.")
+            fallback = self.generate_single_fallback_pitch(query, candidate)
+            words = fallback.split(" ")
+            for i, word in enumerate(words):
+                if is_disconnected and await is_disconnected():
+                    return
+                yield word + (" " if i < len(words) - 1 else "")
+                await asyncio.sleep(0.01)
 
     async def _check_disconnected(
         self,
@@ -618,6 +844,8 @@ class RecommendationSynthesizer:
                 token = word + (" " if i < len(words) - 1 else "")
                 yield self.scrub_spoilers(token)
                 await asyncio.sleep(0.01)
+
+    generate_pitch_stream = stream_pitch
 
     async def stream_dual_sse(
         self,

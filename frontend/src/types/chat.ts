@@ -42,6 +42,21 @@ export interface AnimeCandidate {
   isAdult?: boolean;
   status?: string | null;
   cross_encoder_score?: number | null;
+  curator_note?: string | null;
+  curatorNote?: string | null;
+  exclusion_badge?: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text?: string;
+  candidates?: AnimeCandidate[];
+  warning?: string | null;
+  error?: string | null;
+  isStreaming?: boolean;
+  timings?: Record<string, number>;
+  timestamp: number;
 }
 
 export interface ChatMetadata {

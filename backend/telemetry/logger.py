@@ -20,6 +20,7 @@ import os
 import re
 import json
 import math
+import decimal
 import uuid
 import hmac
 import hashlib
@@ -155,10 +156,19 @@ def sanitize_for_json(obj: Any) -> Any:
         return bool(obj)
     if isinstance(obj, (int, np.integer)):
         return int(obj)
+    if isinstance(obj, decimal.Decimal):
+        f_val = float(obj)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return None
+        if f_val.is_integer():
+            return int(f_val)
+        return f_val
     if isinstance(obj, (float, np.floating)):
         f_val = float(obj)
         if math.isnan(f_val) or math.isinf(f_val):
             return None
+        if f_val.is_integer():
+            return int(f_val)
         return f_val
     if isinstance(obj, str):
         return obj

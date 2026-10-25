@@ -9,9 +9,14 @@
 
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { AnimeCard } from './AnimeCard';
+import * as chatStreamModule from '../../lib/chatStream';
 import type { AnimeCandidate } from '../../types/chat';
+
+vi.mock('../../lib/chatStream', () => ({
+  streamSinglePitch: vi.fn(),
+}));
 
 describe('AnimeCard component', () => {
   const mockOnMoreLikeThis = vi.fn();
@@ -243,5 +248,137 @@ describe('AnimeCard component', () => {
       <AnimeCard anime={animeWithEmptyStudio} onMoreLikeThis={mockOnMoreLikeThis} />
     );
     expect(screen.queryByText(/^by /i)).not.toBeInTheDocument();
+  });
+
+  it('sets referrerPolicy to no-referrer on cover image', () => {
+    /**
+     * Verifies that cover image elements include referrerPolicy="no-referrer"
+     * to prevent third-party image CDNs from rejecting requests.
+     */
+    const anime: AnimeCandidate = {
+      id: 60,
+      title_english: 'Frieren',
+      coverImage_large: 'https://images.anilist.co/frieren.jpg',
+    };
+    render(<AnimeCard anime={anime} onMoreLikeThis={mockOnMoreLikeThis} />);
+    const img = screen.getByRole('img', { name: 'Frieren' });
+    expect(img).toHaveAttribute('referrerPolicy', 'no-referrer');
+  });
+
+  it('defensively coerces release year and episode counts to integers', () => {
+    /**
+     * Verifies that decimal numeric strings or floats for release year and episodes
+     * are cleanly coerced into rounded integers.
+     */
+    const anime: AnimeCandidate = {
+      id: 61,
+      title_english: 'Hunter x Hunter 2011',
+      seasonYear: 2011.0 as any,
+      season: 'FALL',
+      episodes: 148.0 as any,
+    };
+    const { unmount } = render(
+      <AnimeCard anime={anime} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+    expect(screen.getByText(/fall 2011/i)).toBeInTheDocument();
+    expect(screen.getByText('148 eps')).toBeInTheDocument();
+    unmount();
+
+    // Single episode check (1 ep)
+    const singleEpAnime: AnimeCandidate = {
+      id: 62,
+      title_english: 'Akira',
+      episodes: 1.0 as any,
+    };
+    render(<AnimeCard anime={singleEpAnime} onMoreLikeThis={mockOnMoreLikeThis} />);
+    expect(screen.getByText('1 ep')).toBeInTheDocument();
+  });
+
+  it('renders star prefix and AniList Community Rating tooltip on score badge', () => {
+    /**
+     * Verifies that the score badge displays a star prefix and explicit tooltip.
+     */
+    const anime: AnimeCandidate = {
+      id: 63,
+      title_english: 'Mob Psycho 100',
+      averageScore: 86.4,
+    };
+    render(<AnimeCard anime={anime} onMoreLikeThis={mockOnMoreLikeThis} />);
+    const badgeText = screen.getByText('★ 86%');
+    expect(badgeText).toBeInTheDocument();
+
+    const badgeContainer = badgeText.closest('div[title]');
+    expect(badgeContainer).toHaveAttribute('title', 'AniList Community Rating: 86%');
+  });
+
+  it('toggles curator note panel and displays custom note or fallback with exclusion badge', async () => {
+    /**
+     * Verifies that the curator note button toggles the expanded panel,
+     * showing custom curator notes, synthesised notes, and exclusion badges.
+     */
+    // Scenario 1: Custom curator note and exclusion badge
+    const customAnime: AnimeCandidate = {
+      id: 64,
+      title_english: 'Vinland Saga',
+      curator_note: 'Hand-picked for exceptional historical grit.',
+      exclusion_badge: 'Avoids Fantasy Tropes',
+      genres: ['Action', 'Adventure', 'Drama'],
+      averageScore: 88,
+    };
+    const { unmount } = render(
+      <AnimeCard anime={customAnime} onMoreLikeThis={mockOnMoreLikeThis} />
+    );
+
+    const curatorBtn = screen.getByRole('button', { name: /curator note ▾/i });
+    expect(curatorBtn).toBeInTheDocument();
+    expect(screen.queryByText('Hand-picked for exceptional historical grit.')).not.toBeInTheDocument();
+
+    // Click to expand
+    fireEvent.click(curatorBtn);
+    expect(screen.getByRole('button', { name: /curator note ▴/i })).toBeInTheDocument();
+    expect(screen.getByText('Hand-picked for exceptional historical grit.')).toBeInTheDocument();
+    expect(screen.getByText('Avoids Fantasy Tropes')).toBeInTheDocument();
+
+    // Click to collapse
+    fireEvent.click(screen.getByRole('button', { name: /curator note ▴/i }));
+    expect(screen.queryByText('Hand-picked for exceptional historical grit.')).not.toBeInTheDocument();
+    unmount();
+
+    // Scenario 2: Synthesised fallback micro-note with skeleton loader during streaming
+    let resolvePitchStream: (() => void) | null = null;
+    vi.mocked(chatStreamModule.streamSinglePitch).mockImplementation(
+      ({ onError }) =>
+        new Promise<void>((resolve) => {
+          resolvePitchStream = () => {
+            onError?.(new Error('offline'));
+            resolve();
+          };
+        })
+    );
+
+    const fallbackAnime: AnimeCandidate = {
+      id: 65,
+      title_english: 'Bocchi the Rock!',
+      genres: ['Comedy', 'Music', 'Slice of Life'],
+      averageScore: 87,
+    };
+    render(<AnimeCard anime={fallbackAnime} onMoreLikeThis={mockOnMoreLikeThis} />);
+    const fallbackBtn = screen.getByRole('button', { name: /curator note ▾/i });
+    fireEvent.click(fallbackBtn);
+
+    // Verifies skeleton loader is rendered while streaming instead of flashing static text
+    expect(screen.getByText('Curator synthesising tailored note...')).toBeInTheDocument();
+
+    // Conclude the stream with error/offline fallback
+    await act(async () => {
+      resolvePitchStream?.();
+    });
+
+    // Verifies fallback rationale renders once streaming concludes
+    expect(
+      screen.getByText(
+        'Curator Note: Ranked among top matches. Features Comedy, Music, Slice of Life with an acclaimed 87% AniList community rating.'
+      )
+    ).toBeInTheDocument();
   });
 });

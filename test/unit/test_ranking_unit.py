@@ -177,3 +177,96 @@ def test_filter_candidates_by_negative_constraints():
     assert len(filtered) == 1
     assert filtered[0]["id"] == 1
     assert filtered[0]["title_romaji"] == "Safe Show"
+
+
+@pytest.mark.unit
+def test_filter_candidates_softens_when_all_excluded():
+    """
+    Verifies that filter_candidates_by_negative_constraints softens negative constraint
+    drops when all candidates match avoided genres or tropes, returning them with an exclusion badge.
+    """
+    candidates = [
+        {"id": 1, "title_romaji": "Horror Show", "genres": ["Horror"], "tags": ["Gore"]},
+        {"id": 2, "title_romaji": "Scary Show", "genres": ["Horror", "Mystery"], "tags": ["Ghosts"]},
+    ]
+
+    softened = filter_candidates_by_negative_constraints(
+        candidates,
+        avoid_genres=["horror"],
+    )
+
+    assert len(softened) == 2
+    for candidate in softened:
+        assert "exclusion_badge" in candidate
+        assert "Excluded tag present: [Horror]" in candidate["exclusion_badge"]
+
+
+@pytest.mark.unit
+def test_merge_deduplicate_case_insensitive_lookup(mock_ranker):
+    """
+    Verifies that merge_deduplicate correctly handles case-folded column keys from PostgreSQL
+    such as coverimage_large and title_userpreferred.
+    """
+    row_with_folded_keys = {
+        "id": 101,
+        "title_romaji": "Folded Anime",
+        "title_userpreferred": "Folded Anime Preferred",
+        "coverimage_large": "https://example.com/image.jpg",
+        "isadult": False,
+        "popularity": 1500,
+    }
+
+    df = mock_ranker.merge_deduplicate([[row_with_folded_keys]])
+    assert len(df) == 1
+    assert df.iloc[0]["title_userPreferred"] == "Folded Anime Preferred"
+    assert df.iloc[0]["coverImage_large"] == "https://example.com/image.jpg"
+    assert bool(df.iloc[0]["isAdult"]) is False
+
+
+@pytest.mark.unit
+def test_json_conversion_preserves_exclusion_badge(mock_ranker):
+    """
+    Verifies that json_conversion retains the exclusion_badge column in output records.
+    """
+    df = pd.DataFrame([
+        {
+            "id": 55,
+            "title_romaji": "Sample",
+            "title_userPreferred": "Sample",
+            "title_english": "Sample",
+            "coverImage_large": "https://example.com/cover.jpg",
+            "cross_encoder_score": 1.0,
+            "final_rrf_score": 0.5,
+            "retrieval_rrf_score": 0.5,
+            "exclusion_badge": "Excluded tag present: [Mecha]",
+        }
+    ])
+
+    records = mock_ranker.json_conversion(df, include_metadata=True)
+    assert len(records) == 1
+    assert records[0]["exclusion_badge"] == "Excluded tag present: [Mecha]"
+
+
+@pytest.mark.unit
+def test_json_conversion_normalises_case_folded_columns(mock_ranker):
+    """
+    Verifies that json_conversion normalises case-folded columns like
+    coverimage_large and title_userpreferred to their canonical schema names.
+    """
+    df = pd.DataFrame([
+        {
+            "id": 99,
+            "title_romaji": "Case Folded",
+            "title_userpreferred": "Case Folded Preferred",
+            "title_english": "Case Folded English",
+            "coverimage_large": "https://example.com/folded.jpg",
+            "cross_encoder_score": 0.85,
+            "final_rrf_score": 0.45,
+            "retrieval_rrf_score": 0.45,
+        }
+    ])
+
+    records = mock_ranker.json_conversion(df, include_metadata=True)
+    assert len(records) == 1
+    assert records[0]["coverImage_large"] == "https://example.com/folded.jpg"
+    assert records[0]["title_userPreferred"] == "Case Folded Preferred"

@@ -413,20 +413,80 @@ class PipelineOrchestrator:
             pipeline_timings["guardrail_validation_ms"] = validation_ms
 
             if not validation.is_valid:
-                log_status = "error"
-                log_status_code = 400
-                log_error = f"[{validation.category}] {validation.detail}"
-                logger.info(
-                    f"[PipelineOrchestrator] Query rejected by guardrail: '{query}' "
-                    f"[{validation.category}]: {validation.detail} in {validation_ms:.2f}ms"
-                )
-                yield format_sse("error", {
-                    "detail": validation.detail,
-                    "category": validation.category,
-                    "session_id": active_session_id,
-                    "validation_ms": validation_ms,
-                })
-                return
+                if validation.category in ("greeting", "chitchat") or validation.category.startswith("out_of_scope_"):
+                    # Case B: Conversational greetings, pleasantries, or benign out-of-scope queries
+                    # Short-circuit retrieval completely: 0 vector queries, 0 GPU invocations, $0 LLM tokens, TTFT < 15ms.
+                    total_duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
+                    pipeline_timings["ttft_metadata_ms"] = validation_ms
+                    pipeline_timings["total_duration_ms"] = total_duration_ms
+
+                    yield format_sse("metadata", {
+                        "recommendation_id": active_request_id,
+                        "request_id": active_request_id,
+                        "query": query,
+                        "effective_query": query,
+                        "session_id": active_session_id,
+                        "user_id": active_user_id,
+                        "count": 0,
+                        "candidates": [],
+                        "avoid_genres": [],
+                        "avoid_tropes": [],
+                        "timings": pipeline_timings,
+                    })
+
+                    yield format_sse("token", {"text": validation.detail})
+
+                    yield format_sse("done", {
+                        "status": "completed",
+                        "session_id": active_session_id,
+                        "user_id": active_user_id,
+                        "count": 0,
+                        "tokens_emitted": 1,
+                        "timings": pipeline_timings,
+                    })
+
+                    if self.state_manager is not None:
+                        try:
+                            if hasattr(self.state_manager, "record_turn"):
+                                await self.state_manager.record_turn(
+                                    session_id=active_session_id,
+                                    user_query=query,
+                                    assistant_response=validation.detail,
+                                )
+                            elif hasattr(self.state_manager, "append_session_turn"):
+                                turns_to_commit = [
+                                    {"role": "user", "content": query, "timestamp": stream_start_epoch},
+                                    {
+                                        "role": "assistant",
+                                        "content": validation.detail,
+                                        "recommended_ids": [],
+                                        "timestamp": time.time(),
+                                    },
+                                ]
+                                await self.state_manager.append_session_turn(active_session_id, turns_to_commit)
+                        except Exception as hist_err:
+                            logger.warning(f"[PipelineOrchestrator] Failed to commit conversational turn to history: {hist_err}")
+
+                    log_status = "ok"
+                    log_status_code = 200
+                    log_error = None
+                    return
+                else:
+                    # Case A: Hard security violations or malformed queries (prompt_injection, empty_query, query_too_long)
+                    log_status = "error"
+                    log_status_code = 400
+                    log_error = f"[{validation.category}] {validation.detail}"
+                    logger.info(
+                        f"[PipelineOrchestrator] Query rejected by guardrail: '{query}' "
+                        f"[{validation.category}]: {validation.detail} in {validation_ms:.2f}ms"
+                    )
+                    yield format_sse("error", {
+                        "detail": validation.detail,
+                        "category": validation.category,
+                        "session_id": active_session_id,
+                        "validation_ms": validation_ms,
+                    })
+                    return
 
             # Check client disconnection before starting expensive operations
             if is_disconnected and await is_disconnected():
@@ -602,6 +662,67 @@ class PipelineOrchestrator:
             # ---------------------------------------------------------
             # STEP 2.6: CONVERSATIONAL QUEUING & ORDINAL RESOLUTION (Task 2.3)
             # ---------------------------------------------------------
+            if nli_intent == "chitchat":
+                chitchat_response = (
+                    "You are most welcome! Whenever you would like to explore more anime, "
+                    "feel free to share a mood, genre, or premise."
+                )
+                total_duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
+                pipeline_timings["ttft_metadata_ms"] = total_duration_ms
+                pipeline_timings["total_duration_ms"] = total_duration_ms
+
+                yield format_sse("metadata", {
+                    "recommendation_id": active_request_id,
+                    "request_id": active_request_id,
+                    "query": query,
+                    "effective_query": effective_query,
+                    "session_id": active_session_id,
+                    "user_id": active_user_id,
+                    "count": 0,
+                    "candidates": [],
+                    "avoid_genres": combined_avoid_genres,
+                    "avoid_tropes": avoid_tropes,
+                    "timings": pipeline_timings,
+                })
+
+                yield format_sse("token", {"text": chitchat_response})
+
+                yield format_sse("done", {
+                    "status": "completed",
+                    "session_id": active_session_id,
+                    "user_id": active_user_id,
+                    "count": 0,
+                    "tokens_emitted": 1,
+                    "timings": pipeline_timings,
+                })
+
+                if self.state_manager is not None:
+                    try:
+                        if hasattr(self.state_manager, "record_turn"):
+                            await self.state_manager.record_turn(
+                                session_id=active_session_id,
+                                user_query=query,
+                                assistant_response=chitchat_response,
+                            )
+                        elif hasattr(self.state_manager, "append_session_turn"):
+                            turns_to_commit = [
+                                {"role": "user", "content": query, "timestamp": stream_start_epoch},
+                                {
+                                    "role": "assistant",
+                                    "content": chitchat_response,
+                                    "recommended_ids": [],
+                                    "timestamp": time.time(),
+                                },
+                            ]
+                            await self.state_manager.append_session_turn(active_session_id, turns_to_commit)
+                    except Exception as hist_err:
+                        logger.warning(f"[PipelineOrchestrator] Failed to commit conversational turn to history: {hist_err}")
+
+                log_status = "ok"
+                log_status_code = 200
+                log_error = None
+                return
+
             if nli_intent in ("queue_more", "paginate") and bool(active_history):
                 # Automatically extract previously recommended IDs from session history and Redis seen IDs
                 history_seen_ids = extract_recommended_ids_from_history(active_history)

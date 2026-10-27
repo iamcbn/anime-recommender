@@ -132,6 +132,8 @@ PROTECTED_ANIME_ENTITIES = re.compile(
     r"|\bstudent\s+council\s+president\b"
     r"|\bclass\s+president\b"
     r"|\bKaichou\s+wa\s+Maid\s*-\s*sama!\b"
+    r"|\bHello\s+World\b"
+    r"|\bSay\s+Hello\s+to\s+Black\s+Jack\b"
     r")",
     re.IGNORECASE
 )
@@ -147,6 +149,25 @@ ANIME_CONTEXT_CUES = re.compile(
     r"familiars|familiar|snake|snakes|cyberpunk|hacker|hackers"
     r")\b",
     re.IGNORECASE
+)
+
+
+# =============================================================================
+# COMPILED REGEX PATTERNS: CONVERSATIONAL GREETINGS & PLEASANTRIES (TIER 1.5)
+# =============================================================================
+
+# Standalone greetings (anchored, optional direct address)
+GREETING_PATTERNS = re.compile(
+    r"^\s*(?:hi|hello|hey|hiya|yo|howdy|sup|good\s+(?:morning|afternoon|evening)|konnichiwa|what\'?s\s+up)"
+    r"(?:[,\s]+(?:kanseiku|there|assistant))*[!\.\?\s]*$",
+    re.IGNORECASE,
+)
+
+# Standalone pleasantries and expressions of gratitude (anchored, optional direct address)
+PLEASANTRY_PATTERNS = re.compile(
+    r"^\s*(?:thanks|thank\s+you|thx|cheers|sounds\s+(?:good|great)|arigatou?(?:\s+gozaimasu)?)"
+    r"(?:[,\s]+(?:kanseiku|there|assistant|very\s+much|so\s+much|a\s+lot))*[!\.\?\s]*$",
+    re.IGNORECASE,
 )
 
 
@@ -372,12 +393,39 @@ class DomainGuardrails:
             )
 
         # ---------------------------------------------------------------------
-        # TIER 2: Out-Of-Scope Checks with Anime Whitelist & Context Protection
+        # TIER 1.5: Conversational Greetings & Pleasantries (<15ms Short-Circuit)
         # ---------------------------------------------------------------------
-        # Check if the query explicitly features protected anime titles
         has_protected_title = bool(PROTECTED_ANIME_ENTITIES.search(cleaned_query))
         has_anime_cues = bool(ANIME_CONTEXT_CUES.search(cleaned_query))
 
+        # Check pure greetings
+        if GREETING_PATTERNS.search(cleaned_query):
+            if not (has_protected_title or has_anime_cues):
+                return GuardrailResult(
+                    is_valid=False,
+                    category="greeting",
+                    detail=(
+                        "Hello! I am Kanseiku, your anime discovery concierge. "
+                        "What kind of vibe, mood, or story are you feeling like exploring today? "
+                        "You can mention a favourite title, a specific genre, or even an atmosphere you enjoy."
+                    )
+                )
+
+        # Check pure pleasantries
+        if PLEASANTRY_PATTERNS.search(cleaned_query):
+            if not (has_protected_title or has_anime_cues):
+                return GuardrailResult(
+                    is_valid=False,
+                    category="chitchat",
+                    detail=(
+                        "You are most welcome! Whenever you are ready to discover more anime, "
+                        "feel free to share a mood, genre, or premise you would like to explore."
+                    )
+                )
+
+        # ---------------------------------------------------------------------
+        # TIER 2: Out-Of-Scope Checks with Anime Whitelist & Context Protection
+        # ---------------------------------------------------------------------
         # Check Coding / Software Engineering
         if OOS_CODING_PATTERNS.search(cleaned_query):
             # Only allow if explicitly framed as anime narrative/title

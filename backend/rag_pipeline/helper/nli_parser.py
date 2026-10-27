@@ -63,7 +63,7 @@ class NLIOutput(BaseModel):
     media_format: Optional[str] = Field(default=None, description="Media format filter (e.g. TV, MOVIE, OVA, ONA, SPECIAL)")
     min_year: Optional[int] = Field(default=None, description="Earliest release year (inclusive)")
     max_year: Optional[int] = Field(default=None, description="Latest release year (inclusive)")
-    intent: Literal["new_search", "refine", "exclude_title", "more_like", "queue_more", "paginate"] = Field(
+    intent: Literal["new_search", "refine", "exclude_title", "more_like", "queue_more", "paginate", "chitchat"] = Field(
         default="refine",
         description="Conversational intent classification"
     )
@@ -133,7 +133,8 @@ class NLIParser:
         "3. `avoid_tropes`: List plot tropes, narrative elements, or themes to avoid (e.g. ['harem', 'ecchi', 'isekai', 'overpowered MC', 'violence', 'gore']).\n"
         "4. `media_format`: Extract media format constraints when specified (e.g. 'movie' -> 'MOVIE'; 'tv series' -> 'TV'; 'ova' -> 'OVA'). If unspecified, return null.\n"
         "5. `min_year` and `max_year`: Extract release year boundaries (e.g. 'after 2015' -> min_year=2015; 'before 2000' -> max_year=2000; 'from the 90s' -> min_year=1990, max_year=1999). If unspecified, return null.\n"
-        "6. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', or 'paginate'."
+        "6. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', 'paginate', or 'chitchat' "
+        "(use 'chitchat' for pure conversational pleasantries or gratitude without new search criteria)."
     )
 
     def __init__(

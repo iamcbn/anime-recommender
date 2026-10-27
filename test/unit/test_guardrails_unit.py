@@ -16,6 +16,7 @@ from backend.rag_pipeline.helper.guardrails import (
     GuardrailResult,
     ConfidenceAssessment,
 )
+from backend.rag_pipeline.helper.nli_parser import NLIOutput, NLIParser
 
 
 @pytest.mark.unit
@@ -124,6 +125,106 @@ def test_protected_anime_entities_whitelist(allowed_query):
     pass intent validation cleanly without false-positive rejection.
     """
     result = DomainGuardrails.validate_intent(allowed_query)
+    assert result.is_valid
+    assert result.category == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "greeting_query",
+    [
+        "hi",
+        "hello",
+        "hello kanseiku",
+        "hello, kanseiku",
+        "Good morning!",
+        "good morning there",
+        "konnichiwa",
+        "hey there!",
+        "what's up",
+        "sup",
+        "howdy",
+        "hiya kanseiku!",
+    ],
+)
+def test_pure_greetings_routing(greeting_query):
+    """
+    Verifies that validate_intent captures pure conversational greetings as
+    non-retrieval conversational interactions (is_valid=False, category='greeting').
+    """
+    result = DomainGuardrails.validate_intent(greeting_query)
+    assert not result.is_valid
+    assert result.category == "greeting"
+    assert "anime discovery concierge" in result.detail
+    assert "vibe, mood, or story" in result.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pleasantry_query",
+    [
+        "thanks",
+        "thank you",
+        "thank you so much",
+        "thank you very much",
+        "thx",
+        "cheers",
+        "sounds good!",
+        "sounds good",
+        "sounds great",
+        "arigato",
+        "arigatou",
+        "arigatou gozaimasu",
+        "thank you, kanseiku",
+    ],
+)
+def test_pure_pleasantries_routing(pleasantry_query):
+    """
+    Verifies that validate_intent captures pure pleasantries and gratitude as
+    conversational chitchat (is_valid=False, category='chitchat').
+    """
+    result = DomainGuardrails.validate_intent(pleasantry_query)
+    assert not result.is_valid
+    assert result.category == "chitchat"
+    assert "most welcome" in result.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "composite_query",
+    [
+        "hi, recommend me a mecha anime",
+        "hello what is an anime like Steins;Gate",
+        "hello I want cyberpunk anime",
+        "good morning, can you recommend a fantasy anime",
+        "hey suggest some slice of life series",
+    ],
+)
+def test_composite_greetings_with_anime_queries_pass(composite_query):
+    """
+    Verifies that composite greetings combined with anime search cues or titles
+    are not blocked as greetings and proceed to retrieval (is_valid=True, category='ok').
+    """
+    result = DomainGuardrails.validate_intent(composite_query)
+    assert result.is_valid
+    assert result.category == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "title_query",
+    [
+        "Hello World",
+        "Say Hello to Black Jack",
+        "New Game!",
+    ],
+)
+def test_protected_titles_with_greeting_tokens_pass(title_query):
+    """
+    Verifies that genuine anime titles containing greeting terms are protected
+    from false-positive greeting intercept (is_valid=True, category='ok').
+    """
+    result = DomainGuardrails.validate_intent(title_query)
     assert result.is_valid
     assert result.category == "ok"
 
@@ -238,3 +339,19 @@ def test_streaming_spoiler_scrubber_chunking():
     # Verify that the full text or buffer scrubs the reveal
     combined = safe_text + buffer
     assert "[spoiler redacted]" in DomainGuardrails.scrub_spoilers(combined)
+
+
+@pytest.mark.unit
+def test_nli_output_intent_chitchat_support():
+    """
+    Verifies that NLIOutput schema cleanly parses and validates intent='chitchat',
+    and that NLIParser.SYSTEM_PROMPT includes instructions for chitchat classification.
+    """
+    output = NLIOutput(standalone_query="thank you", intent="chitchat")
+    assert output.intent == "chitchat"
+    assert output.standalone_query == "thank you"
+
+    # Verify SYSTEM_PROMPT contains chitchat guideline
+    assert "'chitchat'" in NLIParser.SYSTEM_PROMPT
+    assert "pure conversational pleasantries or gratitude" in NLIParser.SYSTEM_PROMPT
+

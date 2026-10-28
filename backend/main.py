@@ -35,6 +35,7 @@ from backend.rag_pipeline.helper.rate_limiter import (
     rate_limiter,
 )
 from backend.rag_pipeline.helper.state_manager import state_manager
+from backend.rag_pipeline.helper.validation_messages import build_validation_error_content
 from backend.auth.keys import (
     ApiKeyContext,
     authenticate_api_key,
@@ -193,10 +194,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Formats validation errors to uniform error envelope."""
-    msg = sanitize_secrets(str(exc))
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"error": {"code": "validation_error", "message": msg}, "detail": jsonable_encoder(exc.errors())}
+        content=build_validation_error_content(exc.errors())
     )
 
 
@@ -378,6 +378,18 @@ def sanitize_input_query(v: Any) -> str:
     return cleaned
 
 
+def sanitize_chat_query(v: Any) -> str:
+    if not isinstance(v, str):
+        v = str(v or "")
+    v = v.replace(chr(0), "")
+    cleaned = CONTROL_CHARS_REGEX.sub("", v).strip()
+    if len(cleaned) < 1:
+        raise ValueError("Query cannot be empty")
+    if len(cleaned) > 350:
+        raise ValueError("Query cannot exceed 350 characters")
+    return cleaned
+
+
 def validate_bounded_top_k(v: Any) -> int:
     try:
         val = int(v)
@@ -441,7 +453,7 @@ RecommendResponse = AdminRecommendResponse
 
 
 class ChatRequest(BaseModel):
-    query: str = Field(..., description="The conversational prompt or mood query", min_length=2, max_length=350)
+    query: str = Field(..., description="The conversational prompt or mood query", min_length=1, max_length=350)
     top_k: int = Field(default=5, ge=1, le=25, description="Number of candidate cards to retrieve")
     allow_adult: bool = Field(default=False, description="Whether to include 18+ adult titles")
     session_id: Optional[str] = Field(default=None, description="Optional multi-turn session ID")
@@ -452,7 +464,7 @@ class ChatRequest(BaseModel):
     @field_validator("query", mode="before")
     @classmethod
     def validate_query(cls, v: Any) -> str:
-        return sanitize_input_query(v)
+        return sanitize_chat_query(v)
 
     @field_validator("top_k", mode="before")
     @classmethod

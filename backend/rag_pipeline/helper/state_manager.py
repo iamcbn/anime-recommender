@@ -32,7 +32,7 @@ class InMemoryStateStore:
     def __init__(self):
         self._sessions: Dict[str, tuple[float, int, List[Dict[str, Any]]]] = {}
         self._seen_ids: Dict[str, Set[int]] = defaultdict(set)
-        self._query_cache: Dict[str, tuple[float, int, Dict[str, Any]]] = {}
+        self._query_cache: Dict[str, tuple[float, Optional[int], Dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
     async def get_query_cache(self, key: str) -> Optional[Dict[str, Any]]:
@@ -40,12 +40,12 @@ class InMemoryStateStore:
             if key not in self._query_cache:
                 return None
             created_at, ttl, payload = self._query_cache[key]
-            if time.time() - created_at > ttl:
+            if ttl is not None and (time.time() - created_at > ttl):
                 del self._query_cache[key]
                 return None
             return dict(payload)
 
-    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: int = 86400):
+    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: Optional[int] = 86400):
         async with self._lock:
             self._query_cache[key] = (time.time(), ttl, dict(payload))
 
@@ -318,7 +318,7 @@ class StateManager:
 
         return await self._safe_execute(_redis_op, _fallback_op, f"get_query_cache({key})")
 
-    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: int = 86400) -> None:
+    async def set_query_cache(self, key: str, payload: Dict[str, Any], ttl: Optional[int] = 86400) -> None:
         """
         Persists exact normalized query payload in Upstash Redis with 24-hour TTL (86400s).
         """
@@ -326,7 +326,10 @@ class StateManager:
             return
 
         async def _redis_op():
-            await self.redis.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
+            if ttl is not None:
+                await self.redis.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
+            else:
+                await self.redis.set(key, json.dumps(payload, ensure_ascii=False))
 
         async def _fallback_op():
             await self.memory_store.set_query_cache(key, payload, ttl=ttl)

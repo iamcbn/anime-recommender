@@ -8,15 +8,29 @@ Conforms to Sprint 3 Unit Testing standards:
 - Marked with @pytest.mark.unit.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 import pytest
 
+from backend.rag_pipeline.helper.response_variants import (
+    GREETING,
+    WELLBEING,
+    PLEASANTRY,
+    BOT_IDENTITY,
+)
 from backend.rag_pipeline.helper.guardrails import (
     DomainGuardrails,
     GuardrailResult,
     ConfidenceAssessment,
 )
-from backend.rag_pipeline.helper.nli_parser import NLIOutput, NLIParser
+from backend.rag_pipeline.helper.nli_parser import (
+    NLIOutput,
+    NLIParser,
+    should_bypass_nli,
+)
+from backend.rag_pipeline.helper.state_manager import (
+    StateManager,
+    InMemoryStateStore,
+)
 
 
 @pytest.mark.unit
@@ -155,8 +169,7 @@ def test_pure_greetings_routing(greeting_query):
     result = DomainGuardrails.validate_intent(greeting_query)
     assert not result.is_valid
     assert result.category == "greeting"
-    assert "anime discovery concierge" in result.detail
-    assert "vibe, mood, or story" in result.detail
+    assert result.detail in GREETING or result.detail in WELLBEING or "Kanseiku" in result.detail
 
 
 @pytest.mark.unit
@@ -186,7 +199,7 @@ def test_pure_pleasantries_routing(pleasantry_query):
     result = DomainGuardrails.validate_intent(pleasantry_query)
     assert not result.is_valid
     assert result.category == "chitchat"
-    assert "most welcome" in result.detail
+    assert result.detail in PLEASANTRY or "help" in result.detail.lower() or "welcome" in result.detail.lower()
 
 
 @pytest.mark.unit
@@ -354,4 +367,152 @@ def test_nli_output_intent_chitchat_support():
     # Verify SYSTEM_PROMPT contains chitchat guideline
     assert "'chitchat'" in NLIParser.SYSTEM_PROMPT
     assert "pure conversational pleasantries or gratitude" in NLIParser.SYSTEM_PROMPT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bot_identity_query",
+    [
+        "what are you?",
+        "who made you?",
+        "what is kanseiku",
+        "are you an AI",
+        "who are you",
+        "what do you do",
+        "tell me about yourself",
+        "are you a bot",
+        "are you a real human",
+    ],
+)
+def test_bot_identity_routing(bot_identity_query):
+    """
+    Verifies that validate_intent captures deterministic bot identity queries
+    and routes them to category='bot_identity' without database or model execution.
+    """
+    result = DomainGuardrails.validate_intent(bot_identity_query)
+    assert not result.is_valid
+    assert result.category == "bot_identity"
+    assert result.detail in BOT_IDENTITY or "Kanseiku" in result.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "general_query",
+    [
+        "how is the weather",
+        "how is the weather in Tokyo",
+        "how's the weather today",
+        "tell me a joke",
+        "can you tell me a joke",
+    ],
+)
+def test_oos_weather_and_joke_routing(general_query):
+    """
+    Verifies that validate_intent captures general weather and joke queries
+    under out_of_scope_general.
+    """
+    result = DomainGuardrails.validate_intent(general_query)
+    assert not result.is_valid
+    assert result.category == "out_of_scope_general"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_state_manager_query_cache_ttl_none_support():
+    """
+    Verifies that InMemoryStateStore and StateManager support ttl=None
+    for permanent query caching without raising TypeError.
+    """
+    # 1. InMemoryStateStore test with ttl=None
+    store = InMemoryStateStore()
+    payload = {"candidates": [{"id": 1, "title": "Test Anime"}], "cached": True}
+    await store.set_query_cache("test:permanent:1", payload, ttl=None)
+
+    retrieved = await store.get_query_cache("test:permanent:1")
+    assert retrieved is not None
+    assert retrieved["cached"] is True
+    assert retrieved["candidates"][0]["id"] == 1
+
+    # 2. StateManager test with fallback store and ttl=None
+    state = StateManager()
+    state.redis = None  # Ensure fallback in-memory store is used
+    await state.set_query_cache("test:permanent:2", payload, ttl=None)
+
+    state_retrieved = await state.get_query_cache("test:permanent:2")
+    assert state_retrieved is not None
+    assert state_retrieved["cached"] is True
+    assert state_retrieved["candidates"][0]["id"] == 1
+
+    # 3. Redis op simulation with mock redis
+    mock_redis = AsyncMock()
+    state.redis = mock_redis
+    await state.set_query_cache("test:permanent:redis", payload, ttl=None)
+    mock_redis.set.assert_called_once()
+    args, kwargs = mock_redis.set.call_args
+    assert args[0] == "test:permanent:redis"
+    assert "ex" not in kwargs
+
+
+@pytest.mark.unit
+def test_nli_output_schema_expanded_intents():
+    """
+    Verifies that NLIOutput schema cleanly parses bot_identity and off_topic intents
+    with optional conversational_response string.
+    """
+    out_bot = NLIOutput(
+        standalone_query="who are you",
+        intent="bot_identity",
+        conversational_response="I am Kanseiku, your anime discovery concierge.",
+    )
+    assert out_bot.intent == "bot_identity"
+    assert out_bot.conversational_response == "I am Kanseiku, your anime discovery concierge."
+
+    out_off = NLIOutput(
+        standalone_query="how is the weather",
+        intent="off_topic",
+        conversational_response="I focus on anime discovery, but it is always sunny in anime!",
+    )
+    assert out_off.intent == "off_topic"
+    assert out_off.conversational_response is not None
+
+    # Verify SYSTEM_PROMPT contains updated bot_identity and off_topic guidelines
+    assert "'bot_identity'" in NLIParser.SYSTEM_PROMPT
+    assert "'off_topic'" in NLIParser.SYSTEM_PROMPT
+    assert "kansei" in NLIParser.SYSTEM_PROMPT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "turn1_interrogative_query",
+    [
+        "what are you",
+        "who made you",
+        "how do you work",
+        "why should I watch anime",
+        "are you an AI",
+        "can you recommend something",
+        "tell me a joke",
+        "how is the weather",
+        "hello",
+        "hi",
+        "thanks",
+    ],
+)
+def test_turn1_interrogatives_do_not_bypass_nli(turn1_interrogative_query):
+    """
+    Verifies that should_bypass_nli does not bypass conversational interrogatives
+    or ambiguous single words on Turn 1, allowing NLI intent classification.
+    """
+    assert should_bypass_nli(turn1_interrogative_query, None) is False
+    assert should_bypass_nli(turn1_interrogative_query, []) is False
+
+
+@pytest.mark.unit
+def test_turn1_standalone_descriptive_queries_bypass_nli():
+    """
+    Verifies that should_bypass_nli bypasses long standalone descriptive queries
+    on Turn 1 without interrogative markers ($0 token spend).
+    """
+    assert should_bypass_nli("cyberpunk sci-fi thriller with rogue androids", None) is True
+    assert should_bypass_nli("wholesome slice of life high school romance", []) is True
 

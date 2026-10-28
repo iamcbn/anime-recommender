@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.rag_pipeline.orchestrator import PipelineOrchestrator
+from backend.rag_pipeline.helper.response_variants import PLEASANTRY
 from backend.rag_pipeline.helper.guardrails import DomainGuardrails, GuardrailResult
 from backend.rag_pipeline.helper.nli_parser import NLIOutput, NLIParser
 from backend.rag_pipeline.helper.synthesizer import RecommendationSynthesizer
@@ -299,8 +300,11 @@ async def test_multi_turn_nli_chitchat_intent_bypasses_retrieval(
         {"role": "assistant", "content": "1. Death Note"},
     ]
 
+    mock_guardrails = MagicMock(spec=DomainGuardrails)
+    mock_guardrails.validate_intent.return_value = GuardrailResult(is_valid=True)
+
     orchestrator = PipelineOrchestrator(
-        guardrails=DomainGuardrails(),
+        guardrails=mock_guardrails,
         synthesizer=mock_synthesizer,
         state_manager=mock_state_manager,
         retrieval_func=mock_retrieval,
@@ -328,7 +332,7 @@ async def test_multi_turn_nli_chitchat_intent_bypasses_retrieval(
     assert metadata["count"] == 0
 
     token_payload = next(payload for name, payload in events if name == "token")
-    assert "most welcome" in token_payload["text"].lower()
+    assert token_payload["text"] in PLEASANTRY or "welcome" in token_payload["text"].lower() or "help" in token_payload["text"].lower() or "anime" in token_payload["text"].lower()
 
     done_payload = next(payload for name, payload in events if name == "done")
     assert done_payload["status"] == "completed"
@@ -410,3 +414,220 @@ async def test_composite_query_with_greeting_and_narrative_cue_executes_retrieva
     assert "metadata" in event_names
     # Must proceed to retrieval because query contains anime narrative criteria
     mock_retrieval.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity_query",
+    [
+        "what are you?",
+        "who made you?",
+        "what can you do?",
+        "are you an ai?",
+    ],
+)
+async def test_bot_identity_queries_short_circuit_retrieval(
+    identity_query: str,
+    mock_retrieval,
+    mock_synthesizer,
+    mock_state_manager,
+    mock_nli_parser,
+):
+    """
+    Validates that bot identity queries short-circuit retrieval in Step 1,
+    emitting empty candidates and streaming a conversational concierge token.
+    """
+    orchestrator = PipelineOrchestrator(
+        guardrails=DomainGuardrails(),
+        synthesizer=mock_synthesizer,
+        state_manager=mock_state_manager,
+        retrieval_func=mock_retrieval,
+        nli_parser=mock_nli_parser,
+    )
+
+    raw_chunks = []
+    async for chunk in orchestrator.stream_chat(query=identity_query):
+        raw_chunks.append(chunk)
+
+    events = parse_sse_events(raw_chunks)
+    event_names = [e[0] for e in events]
+
+    assert "error" not in event_names
+    assert event_names == ["metadata", "token", "done"]
+
+    metadata = next(payload for name, payload in events if name == "metadata")
+    assert metadata["candidates"] == []
+    assert metadata["count"] == 0
+
+    token_payload = next(payload for name, payload in events if name == "token")
+    assert "kanseiku" in token_payload["text"].lower()
+
+    done_payload = next(payload for name, payload in events if name == "done")
+    assert done_payload["status"] == "completed"
+
+    mock_retrieval.assert_not_called()
+    mock_nli_parser.parse_async.assert_not_called()
+    assert mock_state_manager.set_query_cache.called
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ambiguous_chitchat_nli_classification_short_circuits_retrieval(
+    mock_retrieval,
+    mock_synthesizer,
+    mock_state_manager,
+):
+    """
+    Validates that ambiguous chitchat queries (such as 'how is the weather?')
+    classified by NLI as chitchat with a conversational response short-circuit retrieval
+    and emit empty candidates.
+    """
+    chitchat_nli = MagicMock(spec=NLIParser)
+    custom_response = (
+        "I specialise in anime recommendations rather than local weather reports! "
+        "How about an anime with gorgeous rainy atmospheres like 'Garden of Words'?"
+    )
+
+    nli_output = NLIOutput(
+        standalone_query="how is the weather",
+        avoid_genres=[],
+        avoid_tropes=[],
+        intent="chitchat",
+    )
+    setattr(nli_output, "conversational_response", custom_response)
+    chitchat_nli.parse_async = AsyncMock(return_value=nli_output)
+
+    mock_guardrails = MagicMock(spec=DomainGuardrails)
+    mock_guardrails.validate_intent.return_value = GuardrailResult(is_valid=True)
+
+    orchestrator = PipelineOrchestrator(
+        guardrails=mock_guardrails,
+        synthesizer=mock_synthesizer,
+        state_manager=mock_state_manager,
+        retrieval_func=mock_retrieval,
+        nli_parser=chitchat_nli,
+    )
+
+    raw_chunks = []
+    async for chunk in orchestrator.stream_chat(query="how is the weather?", conversation_history=[]):
+        raw_chunks.append(chunk)
+
+    events = parse_sse_events(raw_chunks)
+    event_names = [e[0] for e in events]
+
+    assert "error" not in event_names
+    assert event_names == ["metadata", "token", "done"]
+
+    metadata = next(payload for name, payload in events if name == "metadata")
+    assert metadata["candidates"] == []
+    assert metadata["count"] == 0
+
+    token_payload = next(payload for name, payload in events if name == "token")
+    assert token_payload["text"] == custom_response
+
+    done_payload = next(payload for name, payload in events if name == "done")
+    assert done_payload["status"] == "completed"
+
+    mock_retrieval.assert_not_called()
+    assert mock_state_manager.set_query_cache.called
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repeat_chitchat_query_cache_hit_in_step_2_1(
+    mock_retrieval,
+    mock_synthesizer,
+    mock_nli_parser,
+):
+    """
+    Validates that a cache hit on a repeat conversational turn in Step 2.1
+    immediately returns cached text with zero calls to NLI and zero calls to retrieval.
+    """
+    cached_text = "I am Kanseiku, your anime discovery concierge."
+    state_manager = MagicMock(spec=StateManager)
+    state_manager.get_session_history = AsyncMock(return_value=[])
+    state_manager.get_excluded_ids = AsyncMock(return_value=set())
+    state_manager.record_turn = AsyncMock()
+    state_manager.append_session_turn = AsyncMock()
+    state_manager.get_query_cache = AsyncMock(
+        return_value={
+            "query": "tell me about yourself",
+            "candidates": [],
+            "text": cached_text,
+            "avoid_genres": [],
+            "avoid_tropes": [],
+        }
+    )
+
+    mock_guardrails = MagicMock(spec=DomainGuardrails)
+    mock_guardrails.validate_intent.return_value = GuardrailResult(is_valid=True)
+
+    orchestrator = PipelineOrchestrator(
+        guardrails=mock_guardrails,
+        synthesizer=mock_synthesizer,
+        state_manager=state_manager,
+        retrieval_func=mock_retrieval,
+        nli_parser=mock_nli_parser,
+    )
+
+    raw_chunks = []
+    async for chunk in orchestrator.stream_chat(query="tell me about yourself"):
+        raw_chunks.append(chunk)
+
+    events = parse_sse_events(raw_chunks)
+    event_names = [e[0] for e in events]
+
+    assert event_names == ["metadata", "token", "done"]
+
+    metadata = next(payload for name, payload in events if name == "metadata")
+    assert metadata["candidates"] == []
+    assert metadata["count"] == 0
+
+    token_payload = next(payload for name, payload in events if name == "token")
+    assert token_payload["text"] == cached_text
+
+    done_payload = next(payload for name, payload in events if name == "done")
+    assert done_payload["status"] == "completed"
+    assert done_payload["cached"] is True
+
+    # Zero downstream calls
+    mock_retrieval.assert_not_called()
+    mock_nli_parser.parse_async.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_standard_recommendation_query_invokes_retrieval(
+    mock_retrieval,
+    mock_synthesizer,
+    mock_state_manager,
+    mock_nli_parser,
+):
+    """
+    Validates that standard anime recommendation queries invoke retrieval
+    and return candidate cards.
+    """
+    orchestrator = PipelineOrchestrator(
+        guardrails=DomainGuardrails(),
+        synthesizer=mock_synthesizer,
+        state_manager=mock_state_manager,
+        retrieval_func=mock_retrieval,
+        nli_parser=mock_nli_parser,
+    )
+
+    raw_chunks = []
+    async for chunk in orchestrator.stream_chat(query="recommend a dark psychological thriller anime"):
+        raw_chunks.append(chunk)
+
+    events = parse_sse_events(raw_chunks)
+    event_names = [e[0] for e in events]
+
+    assert "metadata" in event_names
+    assert "done" in event_names
+    mock_retrieval.assert_called_once()
+
+    metadata = next(payload for name, payload in events if name == "metadata")
+    assert len(metadata["candidates"]) == 1
+    assert metadata["candidates"][0]["title_userPreferred"] == "Death Note"
+

@@ -52,6 +52,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text?: string;
   candidates?: AnimeCandidate[];
+  lead_in?: string | null;
   warning?: string | null;
   error?: string | null;
   isStreaming?: boolean;
@@ -69,6 +70,7 @@ export interface ChatMetadata {
   session_id: string;
   user_id?: string;
   count: number;
+  lead_in?: string;
   candidates: AnimeCandidate[];
   avoid_genres?: string[];
   avoid_tropes?: string[];

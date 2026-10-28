@@ -79,7 +79,7 @@ describe('ChatPage Conversational Message Feed', () => {
     expect(screen.getByText('Atmospheric cyberpunk anime')).toBeInTheDocument();
 
     // Active assistant placeholder loading indicator should be visible
-    expect(screen.getByText(/Searching neural index and preparing personalized recommendations/i)).toBeInTheDocument();
+    expect(screen.getByText(/Finding anime that fit your mood/i)).toBeInTheDocument();
 
     // streamChat should have received the query and empty initial conversation history
     expect(capturedParams).not.toBeNull();

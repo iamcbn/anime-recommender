@@ -29,6 +29,7 @@ from typing import Optional, List, Dict, Any, Set, Tuple, AsyncGenerator, Callab
 from dataclasses import dataclass
 
 from .helper.guardrails import DomainGuardrails, GuardrailResult
+from .helper.response_variants import pick_lead_in, pick_response
 from .helper.synthesizer import (
     RecommendationSynthesizer,
     StreamingCitationBuffer,
@@ -366,6 +367,7 @@ class PipelineOrchestrator:
         log_status = "ok"
         log_status_code = 200
         log_error: Optional[str] = None
+        active_history = conversation_history
 
         try:
             # ---------------------------------------------------------
@@ -413,8 +415,8 @@ class PipelineOrchestrator:
             pipeline_timings["guardrail_validation_ms"] = validation_ms
 
             if not validation.is_valid:
-                if validation.category in ("greeting", "chitchat") or validation.category.startswith("out_of_scope_"):
-                    # Case B: Conversational greetings, pleasantries, or benign out-of-scope queries
+                if validation.category in ("greeting", "chitchat", "bot_identity") or validation.category.startswith("out_of_scope_"):
+                    # Case B: Conversational greetings, pleasantries, bot identity, or benign out-of-scope queries
                     # Short-circuit retrieval completely: 0 vector queries, 0 GPU invocations, $0 LLM tokens, TTFT < 15ms.
                     total_duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
                     pipeline_timings["ttft_metadata_ms"] = validation_ms
@@ -466,6 +468,25 @@ class PipelineOrchestrator:
                                 await self.state_manager.append_session_turn(active_session_id, turns_to_commit)
                         except Exception as hist_err:
                             logger.warning(f"[PipelineOrchestrator] Failed to commit conversational turn to history: {hist_err}")
+
+                    if (
+                        self.state_manager is not None
+                        and not active_history
+                        and offset == 0
+                        and validation.category in ("bot_identity", "chitchat")
+                    ):
+                        try:
+                            cache_key = compute_query_hash(query, top_k, allow_adult, avoid_genres)
+                            cache_entry = {
+                                "query": query,
+                                "candidates": [],
+                                "text": validation.detail,
+                                "avoid_genres": [],
+                                "avoid_tropes": [],
+                            }
+                            await self.state_manager.set_query_cache(cache_key, cache_entry, ttl=None)
+                        except Exception as c_err:
+                            logger.debug(f"[PipelineOrchestrator] Failed to cache intent: {c_err}")
 
                     log_status = "ok"
                     log_status_code = 200
@@ -538,6 +559,41 @@ class PipelineOrchestrator:
 
             if cached_payload:
                 cached_candidates = cached_payload.get("candidates", [])
+                cached_text = cached_payload.get("text")
+                if not cached_candidates and cached_text:
+                    # Fast short-circuit for cached conversational intents (chitchat/bot_identity)
+                    total_duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
+                    pipeline_timings["ttft_metadata_ms"] = total_duration_ms
+                    pipeline_timings["total_duration_ms"] = total_duration_ms
+
+                    yield format_sse("metadata", {
+                        "recommendation_id": active_request_id,
+                        "request_id": active_request_id,
+                        "query": query,
+                        "effective_query": query,
+                        "session_id": active_session_id,
+                        "user_id": active_user_id,
+                        "count": 0,
+                        "candidates": [],
+                        "avoid_genres": [],
+                        "avoid_tropes": [],
+                        "timings": pipeline_timings,
+                    })
+
+                    yield format_sse("token", {"text": cached_text})
+
+                    yield format_sse("done", {
+                        "status": "completed",
+                        "session_id": active_session_id,
+                        "user_id": active_user_id,
+                        "count": 0,
+                        "cached": True,
+                        "timings": pipeline_timings,
+                    })
+                    return
+
+            if cached_payload and cached_payload.get("candidates"):
+                cached_candidates = cached_payload["candidates"]
                 cached_avoid_genres = cached_payload.get("avoid_genres", [])
                 cached_avoid_tropes = cached_payload.get("avoid_tropes", [])
 
@@ -562,6 +618,7 @@ class PipelineOrchestrator:
                     "session_id": active_session_id,
                     "user_id": active_user_id,
                     "count": len(cached_candidates),
+                    "lead_in": pick_lead_in(len(cached_candidates)),
                     "candidates": cached_candidates,
                     "avoid_genres": cached_avoid_genres,
                     "avoid_tropes": cached_avoid_tropes,
@@ -611,6 +668,7 @@ class PipelineOrchestrator:
             nli_avoid_genres: List[str] = []
             avoid_tropes: List[str] = []
             nli_intent = "new_search"
+            nli_result = None
 
             if should_bypass_nli(query, active_history):
                 pipeline_timings["nli_ms"] = 0.0
@@ -662,10 +720,15 @@ class PipelineOrchestrator:
             # ---------------------------------------------------------
             # STEP 2.6: CONVERSATIONAL QUEUING & ORDINAL RESOLUTION (Task 2.3)
             # ---------------------------------------------------------
-            if nli_intent == "chitchat":
-                chitchat_response = (
-                    "You are most welcome! Whenever you would like to explore more anime, "
-                    "feel free to share a mood, genre, or premise."
+            if nli_intent in ("chitchat", "bot_identity", "off_topic"):
+                fallback_pool = {
+                    "bot_identity": "bot_identity",
+                    "chitchat": "pleasantry",
+                    "off_topic": "off_topic",
+                }[nli_intent]
+                conversational_text = (
+                    (getattr(nli_result, "conversational_response", None) if nli_result else None)
+                    or pick_response(fallback_pool)
                 )
                 total_duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
                 pipeline_timings["ttft_metadata_ms"] = total_duration_ms
@@ -685,7 +748,7 @@ class PipelineOrchestrator:
                     "timings": pipeline_timings,
                 })
 
-                yield format_sse("token", {"text": chitchat_response})
+                yield format_sse("token", {"text": conversational_text})
 
                 yield format_sse("done", {
                     "status": "completed",
@@ -702,14 +765,14 @@ class PipelineOrchestrator:
                             await self.state_manager.record_turn(
                                 session_id=active_session_id,
                                 user_query=query,
-                                assistant_response=chitchat_response,
+                                assistant_response=conversational_text,
                             )
                         elif hasattr(self.state_manager, "append_session_turn"):
                             turns_to_commit = [
                                 {"role": "user", "content": query, "timestamp": stream_start_epoch},
                                 {
                                     "role": "assistant",
-                                    "content": chitchat_response,
+                                    "content": conversational_text,
                                     "recommended_ids": [],
                                     "timestamp": time.time(),
                                 },
@@ -717,6 +780,19 @@ class PipelineOrchestrator:
                             await self.state_manager.append_session_turn(active_session_id, turns_to_commit)
                     except Exception as hist_err:
                         logger.warning(f"[PipelineOrchestrator] Failed to commit conversational turn to history: {hist_err}")
+
+                if self.state_manager is not None and not active_history and offset == 0:
+                    try:
+                        cache_entry = {
+                            "query": query,
+                            "candidates": [],
+                            "text": conversational_text,
+                            "avoid_genres": [],
+                            "avoid_tropes": [],
+                        }
+                        await self.state_manager.set_query_cache(cache_key, cache_entry, ttl=None)
+                    except Exception as c_err:
+                        logger.debug(f"[PipelineOrchestrator] Failed to cache intent: {c_err}")
 
                 log_status = "ok"
                 log_status_code = 200
@@ -836,6 +912,7 @@ class PipelineOrchestrator:
                 "session_id": active_session_id,
                 "user_id": active_user_id,
                 "count": len(public_candidates),
+                "lead_in": pick_lead_in(len(public_candidates)),
                 "candidates": public_candidates,
                 "avoid_genres": combined_avoid_genres,
                 "avoid_tropes": avoid_tropes,

@@ -12,6 +12,7 @@ import html
 from typing import Any, List, Dict, Optional, Tuple
 import logging
 
+from .response_variants import pick_response
 logger = logging.getLogger(__name__)
 
 
@@ -100,9 +101,11 @@ OOS_FINANCE_PATTERNS = re.compile(
 # 5. Live Weather, Cooking Recipes, Medical Advice
 OOS_GENERAL_PATTERNS = re.compile(
     r"(?:"
-    r"\b(?:what(?:'s|\s+is)\s+the\s+weather|weather\s+forecast\s+(?:for|in)|current\s+temperature\s+in)\s+[a-zA-Z\s]{2,}\b"
+    r"^\s*how(?:'s|\s+is)\s+the\s+weather\b"
+    r"|\b(?:what(?:'s|\s+is)\s+the\s+weather|weather\s+forecast\s+(?:for|in)|current\s+temperature\s+in)(?:\s+[a-zA-Z\s]{2,})?\b"
     r"|\b(?:recipe|cooking\s+instructions)\s+for\s+[a-zA-Z\s]{3,}\b"
     r"|\b(?:diagnose\s+my|medical\s+advice\s+for|symptoms\s+of)\s+[a-zA-Z\s]{3,}\b"
+    r"|\btell\s+me\s+a\s+joke\b"
     r")",
     re.IGNORECASE
 )
@@ -158,15 +161,45 @@ ANIME_CONTEXT_CUES = re.compile(
 
 # Standalone greetings (anchored, optional direct address)
 GREETING_PATTERNS = re.compile(
-    r"^\s*(?:hi|hello|hey|hiya|yo|howdy|sup|good\s+(?:morning|afternoon|evening)|konnichiwa|what\'?s\s+up)"
+    r"^\s*(?:hi|hello|hey|hiya|heya|yo|howdy|sup|wassup|greetings|hola|ohayou?|konnichiwa|konbanwa"
+    r"|good\s+(?:morning|afternoon|evening|day)|what\'?s\s+up)"
+    r"(?:[,\s]+(?:kanseiku|there|assistant|everyone|friend|buddy|bot))*[!\.\?\s]*$",
+    re.IGNORECASE,
+)
+
+# Wellbeing small talk, alone or after a greeting ("how are you", "hey, how's it going")
+WELLBEING_PATTERNS = re.compile(
+    r"^\s*(?:(?:hi|hello|hey|hiya|heya|yo|howdy)(?:[,\s]+(?:kanseiku|there|assistant))*[,\s]+)?"
+    r"(?:how\s+are\s+(?:you|u)(?:\s+(?:doing|today|going))?|how(?:\'?s|\s+is)\s+it\s+going"
+    r"|how\s+are\s+things|how\s+have\s+you\s+been|you\s+good|are\s+you\s+(?:ok|okay|well|good))"
     r"(?:[,\s]+(?:kanseiku|there|assistant))*[!\.\?\s]*$",
     re.IGNORECASE,
 )
 
-# Standalone pleasantries and expressions of gratitude (anchored, optional direct address)
+# Standalone pleasantries, gratitude, and brief reactions (anchored, optional direct address)
 PLEASANTRY_PATTERNS = re.compile(
-    r"^\s*(?:thanks|thank\s+you|thx|cheers|sounds\s+(?:good|great)|arigatou?(?:\s+gozaimasu)?)"
-    r"(?:[,\s]+(?:kanseiku|there|assistant|very\s+much|so\s+much|a\s+lot))*[!\.\?\s]*$",
+    r"^\s*(?:thanks|thank\s+you|thx|ty|cheers|sounds\s+(?:good|great)|arigatou?(?:\s+gozaimasu)?"
+    r"|ok(?:ay)?|k|kk|nice|cool|great|awesome|wow|lol|lmao|haha(?:ha)*|hehe|alright|got\s+it|i\s+see|noted|sweet)"
+    r"(?:[,\s]+(?:kanseiku|there|assistant|very\s+much|so\s+much|a\s+lot|thanks|thank\s+you))*[!\.\?\s]*$",
+    re.IGNORECASE,
+)
+
+# Standalone farewells (anchored, optional direct address)
+FAREWELL_PATTERNS = re.compile(
+    r"^\s*(?:bye(?:\s+bye)?|goodbye|good\s*night|night|see\s+(?:you|ya)(?:\s+(?:later|soon|around))?"
+    r"|cya|later|take\s+care|ttyl|sayonara|ja\s+ne|i\s+(?:have|gotta|got)\s+to\s+go)"
+    r"(?:[,\s]+(?:kanseiku|there|assistant|thanks|thank\s+you))*[!\.\?\s]*$",
+    re.IGNORECASE,
+)
+
+# Deterministic bot identity queries (anchored, optional direct address)
+BOT_IDENTITY_PATTERNS = re.compile(
+    r"^\s*(?:what|who)\s+(?:are|is)\s+(?:you|kanseiku)(?:\s+(?:exactly|doing))?[!\.\?\s]*$"
+    r"|^\s*(?:who|what)\s+(?:made|created|built|designed)\s+(?:you|kanseiku)[!\.\?\s]*$"
+    r"|^\s*(?:what\s+can\s+you\s+do|what\s+do\s+you\s+do|how\s+do\s+you\s+work|tell\s+me\s+about\s+yourself)[!\.\?\s]*$"
+    r"|^\s*(?:are\s+you\s+(?:an?\s+)?(?:real\s+)?(?:ai|bot|robot|human|real|person|chat\s*gpt|gpt|openai))[!\.\?\s]*$"
+    r"|^\s*(?:what\'?s\s+your\s+name|what\s+is\s+your\s+name|who\s+am\s+i\s+(?:talking|speaking)\s+(?:to|with)"
+    r"|what\s+is\s+this(?:\s+(?:site|app|place|bot))?|help(?:\s+me)?)[!\.\?\s]*$",
     re.IGNORECASE,
 )
 
@@ -367,6 +400,14 @@ class DomainGuardrails:
 
         cleaned_query = query.strip()
 
+        # Single-character input is a friendly nudge, never an error
+        if len(cleaned_query) < 2:
+            return GuardrailResult(
+                is_valid=False,
+                category="chitchat",
+                detail=pick_response("clarify"),
+            )
+
         # Length validation
         if len(cleaned_query) > cls.MAX_QUERY_LENGTH:
             return GuardrailResult(
@@ -404,23 +445,43 @@ class DomainGuardrails:
                 return GuardrailResult(
                     is_valid=False,
                     category="greeting",
-                    detail=(
-                        "Hello! I am Kanseiku, your anime discovery concierge. "
-                        "What kind of vibe, mood, or story are you feeling like exploring today? "
-                        "You can mention a favourite title, a specific genre, or even an atmosphere you enjoy."
-                    )
+                    detail=pick_response("greeting"),
                 )
 
-        # Check pure pleasantries
+        # Check wellbeing small talk ("how are you")
+        if WELLBEING_PATTERNS.search(cleaned_query):
+            if not (has_protected_title or has_anime_cues):
+                return GuardrailResult(
+                    is_valid=False,
+                    category="greeting",
+                    detail=pick_response("wellbeing"),
+                )
+
+        # Check pure pleasantries and brief reactions
         if PLEASANTRY_PATTERNS.search(cleaned_query):
             if not (has_protected_title or has_anime_cues):
                 return GuardrailResult(
                     is_valid=False,
                     category="chitchat",
-                    detail=(
-                        "You are most welcome! Whenever you are ready to discover more anime, "
-                        "feel free to share a mood, genre, or premise you would like to explore."
-                    )
+                    detail=pick_response("pleasantry"),
+                )
+
+        # Check farewells
+        if FAREWELL_PATTERNS.search(cleaned_query):
+            if not (has_protected_title or has_anime_cues):
+                return GuardrailResult(
+                    is_valid=False,
+                    category="chitchat",
+                    detail=pick_response("farewell"),
+                )
+
+        # Check bot identity
+        if BOT_IDENTITY_PATTERNS.search(cleaned_query):
+            if not (has_protected_title or has_anime_cues):
+                return GuardrailResult(
+                    is_valid=False,
+                    category="bot_identity",
+                    detail=pick_response("bot_identity"),
                 )
 
         # ---------------------------------------------------------------------
@@ -497,10 +558,7 @@ class DomainGuardrails:
             if not (has_protected_title or has_anime_cues):
                 return GuardrailResult(
                     is_valid=False,
-                    detail=(
-                        "I specialize strictly in anime recommendations and narrative discovery. "
-                        "Please ask an anime, manga, or story-related question!"
-                    ),
+                    detail=pick_response("off_topic"),
                     category="out_of_scope_general"
                 )
 

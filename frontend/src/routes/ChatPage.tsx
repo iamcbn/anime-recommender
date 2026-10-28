@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, ConversationState } from '../types/chat';
 import { useUserPreferences } from '../hooks/useUserPreferences';
+import { useAuth } from '../hooks/useAuth';
+import { TriviaCycleManager } from '../data/animeTrivia';
 import { streamChat } from '../lib/chatStream';
 import { ChatInput } from '../components/chat/ChatInput';
 import { AnimeCard } from '../components/chat/AnimeCard';
@@ -41,6 +43,106 @@ export const ChatPage: React.FC = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const { preferences } = useUserPreferences();
+
+  // Safely consume auth context, defaulting to anonymous visitor if unprovided (e.g. in isolated test runners)
+  let authUser = null;
+  try {
+    const auth = useAuth();
+    authUser = auth?.user ?? null;
+  } catch {
+    authUser = null;
+  }
+  const user = authUser;
+
+  const displayName = user
+    ? user.user_metadata?.full_name ||
+      user.user_metadata?.name ||
+      (user.email ? user.email.split('@')[0] : null)
+    : null;
+
+  const currentHours = new Date().getHours();
+  const timeWindow: 'morning' | 'afternoon' | 'evening' | 'night' =
+    currentHours >= 5 && currentHours < 12
+      ? 'morning'
+      : currentHours >= 12 && currentHours < 17
+      ? 'afternoon'
+      : currentHours >= 17 && currentHours < 22
+      ? 'evening'
+      : 'night';
+
+  let heroTitle = 'Find Your Next Anime Obsession';
+  let heroSubtitle =
+    'Describe a mood, character archetype, or complex trope. Our neural concierge matches and pitches personalised titles in real time.';
+
+  if (messages.length === 0) {
+    if (displayName) {
+      if (timeWindow === 'morning') {
+        heroTitle = `Good morning, ${displayName}`;
+        heroSubtitle = 'Ready to explore a new series with your morning coffee?';
+      } else if (timeWindow === 'afternoon') {
+        heroTitle = `Good afternoon, ${displayName}`;
+        heroSubtitle = 'What kind of vibe or story are you feeling this afternoon?';
+      } else if (timeWindow === 'evening') {
+        heroTitle = `Good evening, ${displayName}`;
+        heroSubtitle = 'Ready to unwind with your next anime obsession tonight?';
+      } else {
+        heroTitle = `Late-night discovery, ${displayName}`;
+        heroSubtitle =
+          'Looking for a quiet midnight gem or an intense series to keep you awake?';
+      }
+    } else {
+      if (timeWindow === 'morning') {
+        heroTitle = 'Good morning! Find Your Next Anime Obsession';
+        heroSubtitle =
+          'Describe a mood, character archetype, or complex trope. Our neural concierge matches personalised titles in real time.';
+      } else if (timeWindow === 'afternoon') {
+        heroTitle = 'Good afternoon! Find Your Next Anime Obsession';
+        heroSubtitle =
+          'Describe a mood, character archetype, or complex trope. Our neural concierge matches personalised titles in real time.';
+      } else if (timeWindow === 'evening') {
+        heroTitle = 'Good evening! Find Your Next Anime Obsession';
+        heroSubtitle =
+          'Describe a mood, character archetype, or complex trope. Our neural concierge matches personalised titles in real time.';
+      } else {
+        heroTitle = 'Late-night Anime Discovery';
+        heroSubtitle =
+          'Searching for a midnight gem? Describe what atmosphere or premise you enjoy.';
+      }
+    }
+  }
+
+  // Initialise anime trivia cycle manager and rotation ticker
+  const triviaManagerRef = useRef<TriviaCycleManager | null>(null);
+  if (!triviaManagerRef.current) {
+    triviaManagerRef.current = new TriviaCycleManager();
+  }
+  const [currentTrivia, setCurrentTrivia] = useState<string>(() => triviaManagerRef.current?.peek() || '');
+
+  // Advance trivia ticker every 5.5s during streaming waiting states
+  const isAnyTurnWaiting = messages.some(
+    (m) =>
+      m.isStreaming &&
+      (!m.candidates || m.candidates.length === 0) &&
+      !m.text?.trim()
+  );
+
+  useEffect(() => {
+    if (!isAnyTurnWaiting) return;
+
+    if (!triviaManagerRef.current) {
+      triviaManagerRef.current = new TriviaCycleManager();
+    }
+
+    setCurrentTrivia((prev) => (prev ? prev : triviaManagerRef.current!.getNextTrivia()));
+
+    const timer = setInterval(() => {
+      if (triviaManagerRef.current) {
+        setCurrentTrivia(triviaManagerRef.current.getNextTrivia());
+      }
+    }, 5500);
+
+    return () => clearInterval(timer);
+  }, [isAnyTurnWaiting]);
 
   // Rate limit 429 ticking countdown timer
   useEffect(() => {
@@ -128,6 +230,12 @@ export const ChatPage: React.FC = () => {
       setIsLoadingMore(false);
       setQuery('');
 
+      // Immediately advance trivia so a fresh deep-cut line is ready for the waiting state
+      if (!triviaManagerRef.current) {
+        triviaManagerRef.current = new TriviaCycleManager();
+      }
+      setCurrentTrivia(triviaManagerRef.current.getNextTrivia());
+
       trackSearchSubmitted({
         has_filters: Boolean(preferences.disliked_genres?.length || preferences.seen_ids?.length),
         filter_count: (preferences.disliked_genres?.length || 0) + (preferences.seen_ids?.length || 0),
@@ -194,6 +302,7 @@ export const ChatPage: React.FC = () => {
                   ? {
                       ...m,
                       candidates: fetched,
+                      lead_in: metadata.lead_in,
                       timings: metadata.timings || m.timings,
                       recommendation_id: recId,
                       request_id: recId,
@@ -392,10 +501,31 @@ export const ChatPage: React.FC = () => {
             <span>AI Conversational Discovery</span>
           </div>
           <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-            Find Your Next Anime Obsession
+            {messages.length === 0 ? (
+              !displayName ? (
+                timeWindow === 'night' ? (
+                  <>
+                    <span>Late-night Anime Discovery</span>
+                    <span className="sr-only">Find Your Next Anime Obsession</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{heroTitle.replace('Find Your Next Anime Obsession', '').trim()} </span>
+                    <span>Find Your Next Anime Obsession</span>
+                  </>
+                )
+              ) : (
+                <>
+                  <span>{heroTitle}</span>
+                  <span className="sr-only">Find Your Next Anime Obsession</span>
+                </>
+              )
+            ) : (
+              'Find Your Next Anime Obsession'
+            )}
           </h1>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-400 max-w-xl mx-auto leading-relaxed">
-            Describe a mood, character archetype, or complex trope. Our neural concierge matches and pitches personalised titles in real time.
+            {heroSubtitle}
           </p>
         </div>
 
@@ -512,11 +642,11 @@ export const ChatPage: React.FC = () => {
                     {message.error && (
                       <div
                         role="alert"
-                        className="rounded-xl p-3.5 border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 text-red-900 dark:text-red-200 flex items-start gap-2.5 text-xs sm:text-sm"
+                        className="rounded-xl p-3.5 border border-amber-200 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20 text-amber-900 dark:text-amber-200 flex items-start gap-2.5 text-xs sm:text-sm"
                       >
-                        <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                        <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                         <div className="space-y-0.5">
-                          <span className="font-semibold">Generation Notice:</span> {message.error}
+                          <span className="font-semibold">Notice:</span> <span>{message.error}</span>
                         </div>
                       </div>
                     )}
@@ -534,12 +664,63 @@ export const ChatPage: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Neural Search Progress Indicator */}
+                    {/* Waiting State: Ambient progress line, Micro-trivia ticker, and Skeleton card placeholders */}
                     {message.isStreaming &&
-                      (!message.candidates || message.candidates.length === 0) && (
-                        <div className="flex items-center gap-2 text-xs sm:text-sm text-brand font-medium p-4 bg-white dark:bg-dark-900 rounded-2xl border border-slate-200 dark:border-dark-800 shadow-xs">
-                          <Loader2 className="w-4 h-4 animate-spin text-brand shrink-0" />
-                          <span>Searching neural index and preparing personalized recommendations...</span>
+                      (!message.candidates || message.candidates.length === 0) &&
+                      !message.text?.trim() && (
+                        <div className="space-y-4" aria-busy="true" aria-live="polite">
+                          {/* 1. Ambient top progress line */}
+                          <div
+                            className="h-1 w-full bg-gradient-to-r from-brand/20 via-brand to-brand/20 rounded-full animate-pulse"
+                            role="progressbar"
+                            aria-label="Finding anime recommendations"
+                          />
+
+                          {/* Neural search progress indicator */}
+                          <div className="flex items-center gap-2 text-xs sm:text-sm text-brand font-medium p-3.5 bg-white dark:bg-dark-900 rounded-xl border border-slate-200 dark:border-dark-800 shadow-xs">
+                            <Loader2 className="w-4 h-4 animate-spin text-brand shrink-0" />
+                            <span>Finding anime that fit your mood...</span>
+                          </div>
+
+                          {/* 2. Anime micro-trivia ticker */}
+                          {Boolean(currentTrivia) && (
+                            <div className="rounded-xl border border-brand/20 bg-brand/5 dark:bg-brand/10 p-3.5 space-y-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand/15 text-brand dark:bg-brand/30 dark:text-brand-light">
+                                  <Sparkles className="w-3 h-3 text-brand" />
+                                  <span>Anime Micro-Trivia</span>
+                                </span>
+                              </div>
+                              <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                                {currentTrivia}
+                              </p>
+                            </div>
+                          )}
+
+                          {/* 3. Translucent skeleton card placeholders */}
+                          <div className="space-y-3 pt-1">
+                            {[1, 2].map((key) => (
+                              <div
+                                key={`skeleton-${key}`}
+                                aria-hidden="true"
+                                className="p-4 rounded-2xl border border-slate-200 dark:border-dark-800 bg-white/60 dark:bg-dark-900/40 flex gap-4 animate-pulse"
+                              >
+                                <div className="w-20 sm:w-24 h-28 sm:h-36 rounded-xl bg-slate-200 dark:bg-dark-800 shrink-0" />
+                                <div className="flex-1 space-y-3 min-w-0 py-1">
+                                  <div className="h-5 w-48 sm:w-64 bg-slate-200 dark:bg-dark-800 rounded-md" />
+                                  <div className="flex items-center gap-2">
+                                    <div className="h-4 w-14 rounded-full bg-slate-200 dark:bg-dark-800" />
+                                    <div className="h-4 w-14 rounded-full bg-slate-200 dark:bg-dark-800" />
+                                    <div className="h-4 w-14 rounded-full bg-slate-200 dark:bg-dark-800" />
+                                  </div>
+                                  <div className="space-y-1.5 pt-1">
+                                    <div className="h-3 w-full bg-slate-200 dark:bg-dark-800 rounded" />
+                                    <div className="h-3 w-5/6 bg-slate-200 dark:bg-dark-800 rounded" />
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
 
@@ -548,9 +729,14 @@ export const ChatPage: React.FC = () => {
                       <ErrorBoundary resetKeys={[message.candidates]}>
                         <div className="space-y-4 pt-1">
                           <div className="flex items-center justify-between px-1">
-                            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                              <Film className="w-4 h-4 text-brand" />
-                              <span>Recommended Candidates ({message.candidates.length})</span>
+                            <h2 className="text-sm font-semibold tracking-normal text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                              <Film className="w-4 h-4 text-brand shrink-0" />
+                              <span>
+                                {message.lead_in ||
+                                  (message.candidates.length === 1
+                                    ? 'Based on what you asked, here is 1 recommended anime.'
+                                    : `Based on what you asked, here are ${message.candidates.length} recommended anime.`)}
+                              </span>
                             </h2>
                           </div>
 

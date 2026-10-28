@@ -25,6 +25,7 @@ from .llm_clients import (
     get_sync_layer_client,
 )
 from .budget_guard import budget_guard
+from .guardrails import PROTECTED_ANIME_ENTITIES
 from backend.telemetry.logger import log_llm_usage_event
 
 logger = logging.getLogger("anime_recommender.nli_parser")
@@ -45,9 +46,28 @@ CONVERSATIONAL_CUES_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Positive anime-search signals: genres, formats, moods, themes, and request verbs.
+# should_bypass_nli bypasses the LLM classifier only when one of these matches.
+ANIME_SEARCH_SIGNALS_REGEX = re.compile(
+    r"\b(?:anime|animes|manga|ova|ona|series|shows?|movies?|films?|episodes?|seasons?|recommend\w*|suggest\w*"
+    r"|similar\s+to|something\s+like|anime\s+like|genres?|action|adventure|comedy|drama|romance|romcom|horror|thriller"
+    r"|mystery|fantasy|sci-?fi|science\s+fiction|slice\s+of\s+life|isekai|mecha|shou?nen|seinen|shou?jo|josei"
+    r"|sports?|psychological|supernatural|cyberpunk|dystopian|post-apocalyptic|historical|magical\s+girls?"
+    r"|school|high\s+school|detective|crime|military|samurai|vampires?|demons?|robots?|androids?|ghosts?"
+    r"|cosy|cozy|dark|wholesome|sad|emotional|relaxing|chill|funny|heartwarming|melancholic|atmospheric"
+    r"|intense|uplifting|bittersweet|gritty|nostalgic|tearjerker|binge|rainy|spooky)\b",
+    re.IGNORECASE,
+)
+
 # Negation and hard filter patterns on turn-1 queries
 TURN1_NEGATION_FILTER_REGEX = re.compile(
     r"\b(no|without)\b|\b(?:after|before|from|since)\s+\d{4}\b|\b(?:tv|movie|ova|ona)\s+only\b",
+    re.IGNORECASE,
+)
+
+# Conversational and interrogative indicators on turn-1 queries
+TURN1_INTERROGATIVE_REGEX = re.compile(
+    r"\b(?:who|what|how|why|are\s+you|can\s+you|tell\s+me|weather|joke|hello|hi|thanks)\b",
     re.IGNORECASE,
 )
 
@@ -63,9 +83,20 @@ class NLIOutput(BaseModel):
     media_format: Optional[str] = Field(default=None, description="Media format filter (e.g. TV, MOVIE, OVA, ONA, SPECIAL)")
     min_year: Optional[int] = Field(default=None, description="Earliest release year (inclusive)")
     max_year: Optional[int] = Field(default=None, description="Latest release year (inclusive)")
-    intent: Literal["new_search", "refine", "exclude_title", "more_like", "queue_more", "paginate", "chitchat"] = Field(
-        default="refine",
-        description="Conversational intent classification"
+    intent: Literal[
+        "new_search",
+        "refine",
+        "exclude_title",
+        "more_like",
+        "queue_more",
+        "paginate",
+        "chitchat",
+        "bot_identity",
+        "off_topic",
+    ] = Field(default="new_search", description="Conversational intent classification")
+    conversational_response: Optional[str] = Field(
+        default=None,
+        description="Direct conversational answer for non-recommendation turns (chitchat, bot_identity, off_topic)"
     )
 
 
@@ -75,35 +106,40 @@ class NLIOutput(BaseModel):
 
 def should_bypass_nli(query: str, history: Optional[List[dict]]) -> bool:
     """
-    Cost safeguard: Skip NLI parsing if conversational resolution is unnecessary ($0 spent).
+    Cost safeguard: skip NLI parsing only when the query carries a positive
+    anime-search signal and needs no conversational resolution ($0 spent).
+    Anything ambiguous goes to NLI so chitchat is never treated as a search.
     - If history is empty or None:
-      - If query contains explicit negation or hard filter patterns (e.g. 'no', 'without', 'after 2015'):
-        return False (run NLI to extract structured constraints on turn 1).
-      - Otherwise: return True (turn 1 bypass: $0 spent).
+      - Negation or hard filter patterns (e.g. 'no', 'without', 'after 2015'): run NLI.
+      - Conversational interrogatives (e.g. 'who', 'how', 'tell me'): run NLI.
+      - Single-word queries: run NLI.
+      - Otherwise bypass only if ANIME_SEARCH_SIGNALS_REGEX or a protected title matches.
     - If history is present:
-      - If query contains conversational indicators or cues: return False (run NLI).
-      - If query is a long standalone prompt: return True (bypass: $0 spent).
-      - Otherwise return False (short follow-up query runs NLI).
+      - Conversational indicators or cues: run NLI.
+      - Otherwise bypass only for a signal-bearing query of 3 or more words.
     """
     cleaned_query = (query or "").strip()
     if not cleaned_query:
         return True
 
+    has_signal = bool(
+        ANIME_SEARCH_SIGNALS_REGEX.search(cleaned_query)
+        or PROTECTED_ANIME_ENTITIES.search(cleaned_query)
+    )
+
     if not history:
         if TURN1_NEGATION_FILTER_REGEX.search(cleaned_query):
             return False
-        return True
+        if TURN1_INTERROGATIVE_REGEX.search(cleaned_query):
+            return False
+        if len(cleaned_query.split()) <= 1:
+            return False
+        return has_signal
 
-    has_cues = bool(CONVERSATIONAL_CUES_REGEX.search(cleaned_query))
-    if has_cues:
+    if CONVERSATIONAL_CUES_REGEX.search(cleaned_query):
         return False
 
-    # Standalone prompts without conversational indicators (>= 4 words or >= 20 characters)
-    is_long_standalone = len(cleaned_query.split()) >= 4 or len(cleaned_query) >= 20
-    if is_long_standalone:
-        return True
-
-    return False
+    return has_signal and len(cleaned_query.split()) >= 3
 
 
 # ----------------------
@@ -133,8 +169,24 @@ class NLIParser:
         "3. `avoid_tropes`: List plot tropes, narrative elements, or themes to avoid (e.g. ['harem', 'ecchi', 'isekai', 'overpowered MC', 'violence', 'gore']).\n"
         "4. `media_format`: Extract media format constraints when specified (e.g. 'movie' -> 'MOVIE'; 'tv series' -> 'TV'; 'ova' -> 'OVA'). If unspecified, return null.\n"
         "5. `min_year` and `max_year`: Extract release year boundaries (e.g. 'after 2015' -> min_year=2015; 'before 2000' -> max_year=2000; 'from the 90s' -> min_year=1990, max_year=1999). If unspecified, return null.\n"
-        "6. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', 'paginate', or 'chitchat' "
-        "(use 'chitchat' for pure conversational pleasantries or gratitude without new search criteria)."
+        "6. `intent`: Classify user intent as 'new_search', 'refine', 'exclude_title', 'more_like', 'queue_more', 'paginate', 'chitchat', 'bot_identity', or 'off_topic'.\n"
+        "   - When the user asks about the assistant's identity (e.g. 'what are you?', 'who made you?'), set intent='bot_identity' and generate a grounded, polite response explaining that Kanseiku is an anime discovery concierge. Canonical etymology: kansei (emotional intuition/sensibility) + ku (quiet ward/district). Never mention iku.\n"
+        "   - When the user engages in general small talk, pleasantries, or off-topic queries without anime context (e.g. 'how is the weather?', 'tell me a joke', or pure conversational pleasantries or gratitude), set intent='chitchat' or intent='off_topic' and provide a friendly conversational response politely steering back to anime recommendations.\n"
+        "7. `conversational_response`: For non-recommendation turns (chitchat, bot_identity, off_topic), provide a direct, concise conversational response. For recommendation requests, return null.\n"
+        "8. Decision rule: if the user names a mood, genre, title, theme or asks to watch something, it is a search (new_search or a follow-up intent). "
+        "If it is a greeting, thanks, a reaction, a question about you, or anything with no anime request, use chitchat, bot_identity or off_topic. "
+        "When you are genuinely unsure whether the user wants a recommendation, prefer intent='chitchat' and use conversational_response to ask one short clarifying question. "
+        "Never invent a search for small talk. Never mention names or the time of day in conversational_response.\n\n"
+        "Examples (query -> intent):\n"
+        "- 'hey, how is your day going?' -> chitchat (reply warmly, then invite a mood or title)\n"
+        "- 'lol nice' -> chitchat\n"
+        "- 'good night!' -> chitchat\n"
+        "- 'are you a real person?' -> bot_identity\n"
+        "- 'what is the capital of Peru?' -> off_topic\n"
+        "- 'something cosy for a rainy evening' -> new_search\n"
+        "- 'dark psychological thriller like Monster' -> new_search\n"
+        "- 'I am bored' -> chitchat (ask what mood they would like)\n"
+        "- 'I am bored, any good isekai?' -> new_search"
     )
 
     def __init__(
@@ -206,7 +258,7 @@ class NLIParser:
                     model=self.model,
                     messages=messages,
                     response_format=NLIOutput,
-                    max_tokens=120,
+                    max_tokens=400,
                     temperature=0.1,
                 ),
                 timeout=3.0,
@@ -311,7 +363,7 @@ class NLIParser:
                 model=self.model,
                 messages=messages,
                 response_format=NLIOutput,
-                max_tokens=120,
+                max_tokens=400,
                 temperature=0.1,
                 timeout=3.0,
             )
